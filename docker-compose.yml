@@ -1,0 +1,45 @@
+services:
+  app:
+    build: .
+    container_name: aco-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      # Point the gateway at the containerized Chroma server.
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      SIMILARITY_THRESHOLD: "0.85"
+      COMPLEXITY_WORD_THRESHOLD: "40"
+      # Reach an Ollama running on the Docker host.
+      OLLAMA_HOST: "http://host.docker.internal:11434"
+      OLLAMA_MODEL: "llama3.2"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "gemini-1.5-flash"
+      REMOTE_COST_PER_1K_TOKENS: "0.0005"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    extra_hosts:
+      # Lets the container resolve the host (for host-run Ollama) on Linux.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    container_name: aco-chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  chroma-data:

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import fastapi, pydantic_settings, httpx\")",
+      "Bash(pip install *)",
+      "Bash(python -m pytest -q)",
+      "Bash(D:/anaconda/envs/cis6020-ml/python.exe -m pytest -q)"
+    ]
+  }
+}
