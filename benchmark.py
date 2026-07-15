@@ -23,12 +23,38 @@ from dataclasses import dataclass
 import httpx
 
 DEFAULT_PROMPTS: list[str] = [
-    "What is the capital of France?",
-    "Explain list comprehensions in Python.",
-    "What is the boiling point of water at sea level?",
-    "Summarize the theory of relativity in one sentence.",
-    "How do I reverse a string in Python?",
-    "What is the largest planet in the solar system?",
+    # --- Billing cluster: same intent, different wording ---
+    "A customer is asking why their subscription renewed at a higher price than "
+    "last year. They signed up during a promotional period that has now ended. "
+    "Draft a clear, empathetic response explaining the pricing change, what the "
+    "promotional rate covered, and what options they have going forward.",
+
+    "Why did my subscription cost go up after renewal? I signed up on a promo "
+    "deal and now I'm being charged more. Please explain what happened and tell "
+    "me what my options are if I want a cheaper plan.",
+
+    "Customer complaint: their bill increased at renewal because their intro "
+    "discount expired. Write a supportive reply that explains the promotional "
+    "pricing ended, breaks down the new charge, and outlines alternatives.",
+
+    # --- Password/access cluster ---
+    "A user cannot log into their account after enabling two-factor "
+    "authentication. They no longer have access to the phone number they "
+    "registered. Write a step-by-step guide explaining how they can recover "
+    "access, what verification we require, and how long the process takes.",
+
+    "I turned on 2FA and now I'm locked out because I changed my phone number. "
+    "How do I get back into my account? What proof do you need from me and how "
+    "long will it take to sort out?",
+
+    # --- Integration cluster ---
+    "Explain to a non-technical customer how to connect our platform to their "
+    "existing CRM. Cover what permissions are needed, roughly how long setup "
+    "takes, what data syncs, and what to do if the connection fails.",
+
+    "How do I link my CRM to your product? I'm not technical. What access do "
+    "you need, how long does it take, which data comes across, and what should "
+    "I do if it doesn't work?",
 ]
 
 
