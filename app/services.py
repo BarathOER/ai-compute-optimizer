@@ -51,8 +51,11 @@ def build_services(settings: Settings) -> Services:
         gemini_model=settings.gemini_model,
     )
     metrics = Metrics(
-        remote_cost_per_1k=settings.remote_cost_per_1k_tokens,
-        local_cost_per_1k=settings.local_cost_per_1k_tokens,
+        remote_input_cost_per_1m=settings.remote_input_cost_per_1m,
+        remote_output_cost_per_1m=settings.remote_output_cost_per_1m,
+        local_input_cost_per_1m=settings.local_input_cost_per_1m,
+        local_output_cost_per_1m=settings.local_output_cost_per_1m,
+        monthly_query_volume=settings.projected_monthly_queries,
     )
     return Services(
         settings=settings,

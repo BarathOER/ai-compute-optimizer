@@ -139,8 +139,11 @@ def settings() -> Settings:
     return Settings(
         similarity_threshold=0.9,
         complexity_word_threshold=8,
-        remote_cost_per_1k_tokens=0.0005,
-        local_cost_per_1k_tokens=0.0,
+        remote_input_cost_per_1m=1.50,
+        remote_output_cost_per_1m=9.00,
+        local_input_cost_per_1m=0.0,
+        local_output_cost_per_1m=0.0,
+        projected_monthly_queries=100_000,
         gemini_api_key="test-key",
     )
 
@@ -160,8 +163,11 @@ def services(settings: Settings, fake_llm: FakeLLM) -> Services:
         router=ComplexityRouter(settings.complexity_word_threshold),
         llm=fake_llm,
         metrics=Metrics(
-            remote_cost_per_1k=settings.remote_cost_per_1k_tokens,
-            local_cost_per_1k=settings.local_cost_per_1k_tokens,
+            remote_input_cost_per_1m=settings.remote_input_cost_per_1m,
+            remote_output_cost_per_1m=settings.remote_output_cost_per_1m,
+            local_input_cost_per_1m=settings.local_input_cost_per_1m,
+            local_output_cost_per_1m=settings.local_output_cost_per_1m,
+            monthly_query_volume=settings.projected_monthly_queries,
         ),
     )
 

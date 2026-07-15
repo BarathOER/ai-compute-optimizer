@@ -86,12 +86,12 @@ async def query(
         if lookup.hit is not None:
             hit = lookup.hit
             latency_ms = (time.perf_counter() - start) * 1000.0
-            tokens = estimate_tokens(payload.prompt) + estimate_tokens(hit.answer)
             actual_cost, savings = services.metrics.record(
                 cache_hit=True,
                 route="cache",
                 latency_ms=latency_ms,
-                tokens=tokens,
+                input_tokens=estimate_tokens(payload.prompt),
+                output_tokens=estimate_tokens(hit.answer),
             )
             return QueryResponse(
                 answer=hit.answer,
@@ -115,12 +115,12 @@ async def query(
     services.cache.store(payload.prompt, embedding, result.text, result.model)
 
     latency_ms = (time.perf_counter() - start) * 1000.0
-    tokens = estimate_tokens(payload.prompt) + estimate_tokens(result.text)
     actual_cost, savings = services.metrics.record(
         cache_hit=False,
         route=route,
         latency_ms=latency_ms,
-        tokens=tokens,
+        input_tokens=estimate_tokens(payload.prompt),
+        output_tokens=estimate_tokens(result.text),
     )
     return QueryResponse(
         answer=result.text,

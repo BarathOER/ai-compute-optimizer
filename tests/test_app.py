@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.metrics import Metrics
 from app.router import ComplexityRouter
 
 
@@ -100,3 +101,106 @@ def test_metrics_endpoint_tracks_hits_and_savings(client) -> None:
     assert snapshot["cache_misses"] == 1
     assert snapshot["hit_rate"] == 0.5
     assert snapshot["total_savings_usd"] > 0.0
+    assert snapshot["total_input_tokens"] > 0
+    assert snapshot["total_output_tokens"] > 0
+
+
+def _metrics() -> Metrics:
+    """A Metrics with the split-rate pricing used across cost tests."""
+    return Metrics(
+        remote_input_cost_per_1m=1.50,
+        remote_output_cost_per_1m=9.00,
+        local_input_cost_per_1m=0.0,
+        local_output_cost_per_1m=0.0,
+        monthly_query_volume=100_000,
+    )
+
+
+def test_output_tokens_cost_six_times_input() -> None:
+    """Output tokens are priced 6x input (9.00 vs 1.50 per 1M)."""
+    metrics = _metrics()
+    input_only = metrics.cost_for(1_000_000, 0, remote=True)
+    output_only = metrics.cost_for(0, 1_000_000, remote=True)
+    assert input_only == 1.50
+    assert output_only == 9.00
+    assert output_only == 6 * input_only
+
+
+def test_cache_hit_saves_full_remote_cost() -> None:
+    """A cache hit costs nothing and saves the whole remote price."""
+    metrics = _metrics()
+    actual, savings = metrics.record(
+        cache_hit=True,
+        route="cache",
+        latency_ms=1.0,
+        input_tokens=500,
+        output_tokens=1_000,
+    )
+    expected_remote = metrics.cost_for(500, 1_000, remote=True)
+    assert actual == 0.0
+    assert savings == expected_remote > 0.0
+
+
+def test_local_route_saves_difference_vs_remote() -> None:
+    """A local-routed miss saves the remote price minus the (free) local cost."""
+    metrics = _metrics()
+    actual, savings = metrics.record(
+        cache_hit=False,
+        route="local",
+        latency_ms=1.0,
+        input_tokens=800,
+        output_tokens=400,
+    )
+    assert actual == 0.0  # local rates are zero here
+    assert savings == metrics.cost_for(800, 400, remote=True) > 0.0
+
+
+def test_remote_route_has_no_savings() -> None:
+    """A remote-routed miss pays full price and saves nothing."""
+    metrics = _metrics()
+    actual, savings = metrics.record(
+        cache_hit=False,
+        route="remote",
+        latency_ms=1.0,
+        input_tokens=800,
+        output_tokens=400,
+    )
+    assert actual == metrics.cost_for(800, 400, remote=True)
+    assert savings == 0.0
+
+
+def test_projection_scales_with_volume_and_hit_rate() -> None:
+    """Projected monthly/annual savings follow volume * hit_rate * avg cost."""
+    metrics = _metrics()
+    # One remote miss, one hit -> hit_rate 0.5, uniform token counts.
+    metrics.record(
+        cache_hit=False, route="remote", latency_ms=1.0,
+        input_tokens=1_000, output_tokens=2_000,
+    )
+    metrics.record(
+        cache_hit=True, route="cache", latency_ms=1.0,
+        input_tokens=1_000, output_tokens=2_000,
+    )
+
+    projection = metrics.snapshot().projection
+    per_query = metrics.cost_for(1_000, 2_000, remote=True)
+    expected_monthly = 100_000 * 0.5 * per_query
+    assert projection.hit_rate == 0.5
+    assert projection.avg_input_tokens == 1_000
+    assert projection.avg_output_tokens == 2_000
+    assert projection.projected_monthly_savings_usd == expected_monthly
+    assert projection.projected_annual_savings_usd == expected_monthly * 12
+
+
+def test_metrics_endpoint_exposes_projection(client) -> None:
+    """The /metrics payload includes the nested savings projection."""
+    client.post("/query", json={"prompt": "capital of france"})  # miss
+    client.post("/query", json={"prompt": "capital of france"})  # hit
+
+    projection = client.get("/metrics").json()["projection"]
+    assert projection["monthly_query_volume"] == 100_000
+    assert projection["projected_monthly_savings_usd"] > 0.0
+    assert (
+        projection["projected_annual_savings_usd"]
+        == projection["projected_monthly_savings_usd"] * 12
+    )

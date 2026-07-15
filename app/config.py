@@ -65,11 +65,25 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str = Field(default="gemini-1.5-flash")
 
-    # --- Cost model (USD per 1K tokens) ---------------------------------
-    # Local inference is treated as free at the token level; the remote
-    # model carries a per-1K-token price used for savings estimates.
-    local_cost_per_1k_tokens: float = Field(default=0.0)
-    remote_cost_per_1k_tokens: float = Field(default=0.0005)
+    # --- Cost model (USD per 1M tokens) ---------------------------------
+    # Real LLM pricing bills input (prompt) and output (completion) tokens at
+    # different rates; output is materially more expensive. Rates are per 1M
+    # tokens to match how providers publish list prices. Defaults reflect
+    # Gemini 3.5 Flash list pricing (verified July 2026). Local inference is
+    # treated as free at the token level.
+    remote_input_cost_per_1m: float = Field(default=1.50)
+    remote_output_cost_per_1m: float = Field(default=9.00)
+    local_input_cost_per_1m: float = Field(default=0.0)
+    local_output_cost_per_1m: float = Field(default=0.0)
+
+    # --- Savings projection ---------------------------------------------
+    # Expected production query volume, used to project monthly/annual savings
+    # from the measured hit rate and average per-query token usage.
+    projected_monthly_queries: int = Field(
+        default=100_000,
+        ge=0,
+        description="Monthly query volume assumed when projecting savings.",
+    )
 
     @property
     def use_remote_chroma(self) -> bool:

@@ -73,15 +73,33 @@ The gateway exposes a live snapshot at **`GET /metrics`**:
 | `local_routes` / `remote_routes` | Miss traffic split by the router |
 | `avg_latency_ms` | Mean end-to-end latency |
 | `avg_hit_latency_ms` / `avg_miss_latency_ms` | Latency split by cache outcome |
+| `total_input_tokens` / `total_output_tokens` | Prompt vs. completion tokens seen |
+| `avg_input_tokens` / `avg_output_tokens` | Per-query averages (drive the projection) |
 | `total_cost_usd` | Estimated actual spend |
 | `total_baseline_cost_usd` | What "always remote" would have cost |
 | `total_savings_usd` | `baseline − actual` — the headline number |
+| `projection` | Volume-based monthly/annual savings forecast (see below) |
 
-**Cost model.** Tokens are estimated at ~4 characters/token and priced per model
-via `LOCAL_COST_PER_1K_TOKENS` and `REMOTE_COST_PER_1K_TOKENS`. Cache hits cost
-`$0`; local routes are priced at the local rate (default free). Savings for each
-request is the remote baseline cost minus the actual cost, so both caching and
+**Cost model.** Tokens are estimated at ~4 characters/token. Real LLM pricing
+bills **input (prompt)** and **output (completion)** tokens at different rates —
+output is ~6x input — so each is counted and priced separately, per 1M tokens,
+via `REMOTE_INPUT_COST_PER_1M` / `REMOTE_OUTPUT_COST_PER_1M` (and the `LOCAL_*`
+equivalents). Defaults reflect Gemini 3.5 Flash list pricing ($1.50 input /
+$9.00 output per 1M, verified July 2026). Cache hits cost `$0` and save the full
+remote price; local routes are priced at the local rate (default free). Per-request
+savings is the remote baseline cost minus the actual cost, so both caching and
 local routing contribute.
+
+**Savings projection.** `snapshot().projection` (exposed under `projection` in
+`/metrics`) forecasts the cache's dollar value at production scale. Given
+`PROJECTED_MONTHLY_QUERIES`, it applies the *measured* hit rate and average
+input/output tokens per query against a no-cache baseline:
+
+```
+avg_remote_cost_per_query = remote_price(avg_input_tokens, avg_output_tokens)
+projected_monthly_savings = monthly_queries × hit_rate × avg_remote_cost_per_query
+projected_annual_savings  = projected_monthly_savings × 12
+```
 
 ---
 
@@ -169,7 +187,9 @@ Key knobs:
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | `localhost:11434` / `llama3.2` | Local backend |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-1.5-flash` | Remote backend |
-| `REMOTE_COST_PER_1K_TOKENS` | `0.0005` | Price used for cost/savings estimates |
+| `REMOTE_INPUT_COST_PER_1M` / `REMOTE_OUTPUT_COST_PER_1M` | `1.50` / `9.00` | Remote price per 1M input/output tokens |
+| `LOCAL_INPUT_COST_PER_1M` / `LOCAL_OUTPUT_COST_PER_1M` | `0.0` / `0.0` | Local price per 1M input/output tokens |
+| `PROJECTED_MONTHLY_QUERIES` | `100000` | Volume assumed for the savings projection |
 
 **Secrets are never hardcoded.** `.env` is git-ignored; only `.env.example`
 (with blank keys) is committed.
