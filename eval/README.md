@@ -219,6 +219,26 @@ three. The original single-stage and two-stage runs above drew from **`train`**
 — which is why the check above separates the train/validation (contamination)
 and PAWS (distribution-shift) axes.
 
+## Savings sensitivity model
+
+[savings_model.py](savings_model.py) replaces the gateway's single-point savings
+projection with a **labeled, multi-scenario** model — because one assumed volume
+and one hit rate is not a defensible business number.
+
+```bash
+python eval/savings_model.py
+```
+
+It prints an annual-savings grid (rows = monthly volume 10K/100K/500K/1M,
+columns = hit rate 20% / 30% / **44.4% measured** / 60%), writes it to
+`results/sensitivity.csv`, and prints an **Assumptions** section that tags every
+input `MEASURED` or `ASSUMED`, plus the honest caveats (local routes modeled at
+$0 is optimistic; the 44.4% hit rate is from a synthetic workload; PAWS-style
+adversarial inputs are a documented failure mode). The core is a pure function,
+`project_savings(...)`, so the math is unit-tested. The live `/metrics`
+`projection` object carries the same provenance labels in its `basis` field, so
+the API never presents the number as fact.
+
 ## Standalone
 
 Every script here imports the embedder but makes **no** LLM calls, no API

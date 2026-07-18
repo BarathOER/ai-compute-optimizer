@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from dataclasses import asdict, dataclass, field
 
-MONTHS_PER_YEAR = 12
+from app.savings import project_savings
 
 
 def estimate_tokens(text: str) -> int:
@@ -33,6 +33,10 @@ class CostProjection:
     Projects the value of the *cache* specifically: at the measured hit rate,
     ``monthly_query_volume * hit_rate`` queries per month are served for free
     instead of costing the average remote price, versus a no-cache baseline.
+
+    ``basis`` labels each input MEASURED or ASSUMED so this number is never
+    presented as fact. For a full multi-scenario sensitivity analysis (not a
+    single point), see ``eval/savings_model.py``.
     """
 
     monthly_query_volume: int
@@ -42,6 +46,7 @@ class CostProjection:
     avg_remote_cost_per_query_usd: float
     projected_monthly_savings_usd: float
     projected_annual_savings_usd: float
+    basis: dict[str, str]
 
 
 @dataclass
@@ -167,18 +172,34 @@ class Metrics:
         the cache, a ``hit_rate`` fraction of queries cost nothing, so the
         monthly saving is ``volume * hit_rate * avg_remote_cost_per_query``.
         """
-        avg_remote_cost = self.cost_for(
-            round(avg_input), round(avg_output), remote=True
+        # Shared single source of truth (also used by eval/savings_model.py).
+        projected = project_savings(
+            monthly_volume=self.monthly_query_volume,
+            hit_rate=hit_rate,
+            avg_input_tokens=avg_input,
+            avg_output_tokens=avg_output,
+            input_price_per_1m=self.remote_input_cost_per_1m,
+            output_price_per_1m=self.remote_output_cost_per_1m,
         )
-        monthly = self.monthly_query_volume * hit_rate * avg_remote_cost
+        # Label provenance so the API never presents the projection as fact.
+        basis = {
+            "monthly_query_volume": "ASSUMED (config PROJECTED_MONTHLY_QUERIES)",
+            "hit_rate": "MEASURED (live, this process)",
+            "avg_input_tokens": "MEASURED (live, this process)",
+            "avg_output_tokens": "MEASURED (live, this process)",
+            "token_prices": "MEASURED (published list price, config)",
+            "local_route_cost": "ASSUMED $0 (optimistic; excludes GPU/compute)",
+            "traffic_distribution": "ASSUMED (future traffic resembles observed)",
+        }
         return CostProjection(
             monthly_query_volume=self.monthly_query_volume,
             hit_rate=hit_rate,
             avg_input_tokens=avg_input,
             avg_output_tokens=avg_output,
-            avg_remote_cost_per_query_usd=avg_remote_cost,
-            projected_monthly_savings_usd=monthly,
-            projected_annual_savings_usd=monthly * MONTHS_PER_YEAR,
+            avg_remote_cost_per_query_usd=projected["per_query_remote_cost_usd"],
+            projected_monthly_savings_usd=projected["monthly_savings_usd"],
+            projected_annual_savings_usd=projected["annual_savings_usd"],
+            basis=basis,
         )
 
     def snapshot(self) -> MetricsSnapshot:

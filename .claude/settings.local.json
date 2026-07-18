@@ -17,7 +17,9 @@
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe -c \"import chromadb; print\\('chromadb', chromadb.__version__\\)\")",
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe -c ' *)",
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe -c \"import eval.two_stage_eval, eval.contamination_check; print\\('eval imports OK'\\)\")",
-      "Bash(D:/anaconda/envs/cis6020-ml/python.exe -m pytest tests/test_reranker.py -q)"
+      "Bash(D:/anaconda/envs/cis6020-ml/python.exe -m pytest tests/test_reranker.py -q)",
+      "Bash(D:/anaconda/envs/cis6020-ml/python.exe eval/savings_model.py)",
+      "Bash(D:/anaconda/envs/cis6020-ml/python.exe eval/savings_model.py --help)"
     ]
   }
 }

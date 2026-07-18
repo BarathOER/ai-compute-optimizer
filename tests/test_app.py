@@ -241,3 +241,11 @@ def test_metrics_endpoint_exposes_projection(client) -> None:
         projection["projected_annual_savings_usd"]
         == projection["projected_monthly_savings_usd"] * 12
     )
+
+    # The projection must carry a provenance "basis" so callers never read it
+    # as fact: volume is assumed, hit rate / tokens / prices are measured.
+    basis = projection["basis"]
+    assert basis["monthly_query_volume"].startswith("ASSUMED")
+    assert basis["hit_rate"].startswith("MEASURED")
+    assert basis["token_prices"].startswith("MEASURED")
+    assert basis["local_route_cost"].startswith("ASSUMED")

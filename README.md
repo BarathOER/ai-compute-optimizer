@@ -127,6 +127,14 @@ projected_monthly_savings = monthly_queries × hit_rate × avg_remote_cost_per_q
 projected_annual_savings  = projected_monthly_savings × 12
 ```
 
+The projection is a *single point* built on one assumed volume, so it ships with
+a **`basis`** field labeling each input `MEASURED` (hit rate, tokens, prices) or
+`ASSUMED` (volume, that local routes cost $0, that future traffic resembles
+observed) — the API never presents the number as fact. For a defensible
+**multi-scenario sensitivity table** (savings across volumes × hit rates, with a
+full assumptions/caveats section), run
+[eval/savings_model.py](eval/savings_model.py).
+
 ---
 
 ## Running it
