@@ -29,6 +29,10 @@ chroma_data/
 .cache/
 models/
 
+# Generated eval artifacts (keep the folder, drop the outputs)
+eval/results/*
+!eval/results/.gitkeep
+
 # Editor / OS
 .vscode/
 .idea/

@@ -23,10 +23,10 @@ the money saved versus an "always call the frontier model" baseline.
    { "prompt": "..." }   │   embeddings.py   embed(prompt)              │
                          │        │                                     │
                          │        ▼                                     │
-                         │   cache.py  ── lookup (cosine ≥ threshold?) ─┼──► ChromaDB
-                         │        │                                     │    (vector store)
-                         │   hit  │  miss                               │
-                         │   ◄────┘    │                                │
+                         │   cache.py  stage 1: top-k cosine ≥ 0.70 ───┼──► ChromaDB
+                         │        │    stage 2: cross-encoder rerank    │    (vector store)
+                         │   hit  │    (reranker.py) ≥ RERANKER_THRESHOLD│
+                         │   ◄────┘    │ miss                           │
                          │             ▼                                │
                          │   router.py  simple? ──► Ollama (local)  ────┼──► llama3.2
                          │              complex? ─► Gemini (remote)  ───┼──► gemini-1.5-flash
@@ -40,10 +40,35 @@ the money saved versus an "always call the frontier model" baseline.
 ```
 
 **Request flow (`/query`):** embed the prompt → look it up in the semantic cache
-(cosine similarity ≥ `SIMILARITY_THRESHOLD` is a hit) → on a hit, return the
-cached answer at zero token cost → on a miss, the router picks the local or
-remote model by complexity, generates an answer, stores it in the cache, and
-returns it. Latency and estimated cost are recorded for every request.
+via **two-stage retrieval** (below) → on a hit, return the cached answer at zero
+token cost → on a miss, the router picks the local or remote model by
+complexity, generates an answer, stores it in the cache, and returns it. Latency
+and estimated cost are recorded for every request.
+
+### Two-stage semantic cache
+
+A single bi-encoder cosine threshold does not work here: offline evaluation
+(see [eval/](eval/)) showed a bi-encoder alone reaches only **7.7% recall at 95%
+precision** on QQP, and that three different bi-encoders hit the same wall — the
+limit is architectural (encoding each prompt independently loses the
+distinctions that flip meaning). So the cache retrieves in two stages:
+
+1. **Stage 1 — recall filter (bi-encoder).** Chroma returns the top-`RERANK_TOP_K`
+   nearest cached prompts; those with cosine ≥ `STAGE1_THRESHOLD` (default 0.70,
+   tuned for *recall*, not precision) become candidates.
+2. **Stage 2 — precision (cross-encoder rerank).** A cross-encoder
+   ([app/reranker.py](app/reranker.py)) reads the query and each candidate
+   *jointly* and accepts a hit only if the best score clears
+   `RERANKER_THRESHOLD`. This lifts recall to **68.8% at 95% precision** for
+   ~+12 ms/query.
+
+Set `ENABLE_RERANKER=false` to fall back to bi-encoder-only matching (the older
+architecture) for A/B comparison. `LookupResult` reports both the stage-1
+similarity and the stage-2 reranker score, and the `/query` response surfaces
+them, so misses stay diagnosable. **Note:** the reranker score is *not* a
+calibrated probability — `RERANKER_THRESHOLD=0.943` is an empirical cut point
+for `cross-encoder/quora-distilroberta-base`; re-tune it via
+[eval/two_stage_eval.py](eval/two_stage_eval.py) if you change the model.
 
 ### Module map
 
@@ -53,7 +78,8 @@ returns it. Latency and estimated cost are recorded for every request.
 | [app/config.py](app/config.py) | Settings from environment variables (no hardcoded keys) |
 | [app/models.py](app/models.py) | Pydantic request/response schemas |
 | [app/embeddings.py](app/embeddings.py) | sentence-transformers prompt embeddings (lazy load) |
-| [app/cache.py](app/cache.py) | ChromaDB semantic cache, cosine + configurable threshold |
+| [app/cache.py](app/cache.py) | Two-stage ChromaDB cache: cosine recall filter + rerank |
+| [app/reranker.py](app/reranker.py) | Cross-encoder reranker (stage 2), loaded once at startup |
 | [app/router.py](app/router.py) | Complexity heuristic → `local` / `remote` |
 | [app/llm.py](app/llm.py) | Ollama (httpx) and Gemini (google-generativeai) backends |
 | [app/metrics.py](app/metrics.py) | Latency + estimated token-cost + savings tracking |
@@ -168,9 +194,11 @@ Set `GATEWAY_URL` if the gateway is not on `localhost:8000`.
 pytest
 ```
 
-Tests cover **health**, **cache hit**, **cache miss**, and **routing**. They use
-in-memory fakes injected through FastAPI's dependency overrides, so no models are
-downloaded and no network calls are made — the same suite runs in CI
+Tests cover **health**, **cache hit**, **cache miss**, **routing**, and the
+**two-stage cache** (stage-2 rejection of a stage-1 match, and the
+reranker-disabled fallback). They use in-memory fakes injected through FastAPI's
+dependency overrides, so no models are downloaded and no network calls are
+made — the same suite runs in CI
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) on every push.
 
 ---
@@ -182,7 +210,11 @@ Key knobs:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SIMILARITY_THRESHOLD` | `0.85` | Min cosine similarity for a cache hit |
+| `STAGE1_THRESHOLD` | `0.70` | Min cosine similarity to become a stage-2 rerank candidate (recall filter) |
+| `RERANK_TOP_K` | `5` | Nearest cached prompts retrieved for reranking |
+| `ENABLE_RERANKER` | `true` | Stage 2 on; `false` = bi-encoder-only (A/B) |
+| `RERANKER_MODEL` | `cross-encoder/quora-distilroberta-base` | Stage-2 cross-encoder |
+| `RERANKER_THRESHOLD` | `0.943` | Min reranker score to accept a hit (empirical, not a probability) |
 | `COMPLEXITY_WORD_THRESHOLD` | `40` | Word count above which a prompt is "complex" |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | `localhost:11434` / `llama3.2` | Local backend |

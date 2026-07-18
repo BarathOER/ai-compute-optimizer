@@ -8,7 +8,12 @@ services:
       # Point the gateway at the containerized Chroma server.
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
-      SIMILARITY_THRESHOLD: "0.85"
+      # Two-stage retrieval: bi-encoder recall filter + cross-encoder rerank.
+      STAGE1_THRESHOLD: "0.70"
+      RERANK_TOP_K: "5"
+      ENABLE_RERANKER: "true"
+      RERANKER_MODEL: "cross-encoder/quora-distilroberta-base"
+      RERANKER_THRESHOLD: "0.943"
       COMPLEXITY_WORD_THRESHOLD: "40"
       # Reach an Ollama running on the Docker host.
       OLLAMA_HOST: "http://host.docker.internal:11434"

@@ -41,12 +41,34 @@ class Settings(BaseSettings):
     chroma_port: int = Field(default=8000)
     chroma_persist_dir: str = Field(default="./chroma_data")
     chroma_collection: str = Field(default="semantic_cache")
-    similarity_threshold: float = Field(
-        default=0.85,
+
+    # --- Two-stage retrieval --------------------------------------------
+    # Stage 1: bi-encoder cosine recall filter. Tuned for RECALL, not
+    # precision — it only decides which cached prompts are worth reranking.
+    stage1_threshold: float = Field(
+        default=0.70,
         ge=0.0,
         le=1.0,
-        description="Minimum cosine similarity for a prompt to count as a "
-        "cache hit.",
+        description="Min cosine similarity for a cached prompt to become a "
+        "stage-2 rerank candidate.",
+    )
+    rerank_top_k: int = Field(
+        default=5,
+        ge=1,
+        description="Number of nearest cached prompts retrieved for reranking.",
+    )
+    # Stage 2: cross-encoder reranker. See app/reranker.py — the threshold is an
+    # empirical cut point for this model, not a calibrated probability.
+    enable_reranker: bool = Field(
+        default=True,
+        description="If false, fall back to bi-encoder-only (stage 1) matching. "
+        "Lets both architectures be A/B compared.",
+    )
+    reranker_model: str = Field(default="cross-encoder/quora-distilroberta-base")
+    reranker_threshold: float = Field(
+        default=0.943,
+        description="Min cross-encoder score to accept a cache hit (empirical, "
+        "model-specific — re-tune via eval/two_stage_eval.py).",
     )
 
     # --- Router ----------------------------------------------------------

@@ -7,6 +7,9 @@ pydantic-settings==2.7.1
 # --- Embeddings & semantic cache ---
 sentence-transformers==3.3.1
 chromadb==0.5.23
+# Used directly by app/reranker.py for score normalization (also a transitive
+# dep of the libraries above); range-pinned to avoid resolver conflicts.
+numpy>=1.26,<3
 
 # --- LLM backends ---
 httpx==0.28.1

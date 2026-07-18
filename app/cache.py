@@ -1,13 +1,24 @@
-"""Semantic cache backed by ChromaDB.
+"""Semantic cache backed by ChromaDB with two-stage retrieval.
 
-Prompts are stored with their embedding vectors. A lookup embeds the incoming
-prompt and asks Chroma for the nearest neighbour by cosine distance; if the
-resulting cosine *similarity* meets the configured threshold, it is a hit.
+A cached answer may be reused only when a new prompt means the *same thing* as a
+stored one. Deciding that with a single bi-encoder cosine threshold is
+unreliable (see ``eval/``): the classes barely separate, so any threshold either
+misses real duplicates or serves wrong answers. Instead this cache retrieves in
+two stages:
+
+    Stage 1 (recall): ask Chroma for the top-k nearest cached prompts and keep
+        those with cosine similarity >= ``stage1_threshold`` (default 0.70,
+        tuned for recall — it decides *candidates*, not hits).
+    Stage 2 (precision): a cross-encoder rerules those candidates by reading the
+        query and the cached prompt jointly; accept a hit only if the best
+        reranker score clears ``reranker.threshold``.
 
 Chroma returns cosine *distance* in ``[0, 2]``; similarity is ``1 - distance``.
+Every lookup reports both the stage-1 similarity and the stage-2 reranker score
+so that misses remain diagnosable.
 
-Every lookup reports the best similarity it saw — hit or miss — so the
-threshold can be tuned against real data rather than guessed at.
+The reranker can be disabled (``enable_reranker=False``) to fall back to
+bi-encoder-only matching — the older architecture — for A/B comparison and tests.
 """
 
 from __future__ import annotations
@@ -20,6 +31,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from chromadb.api import ClientAPI
     from chromadb.api.models.Collection import Collection
 
+    from app.reranker import Reranker
+
 
 @dataclass(frozen=True)
 class CacheHit:
@@ -28,20 +41,33 @@ class CacheHit:
     answer: str
     similarity: float
     model: str
+    reranker_score: float | None = None
 
 
 @dataclass(frozen=True)
 class LookupResult:
     """Outcome of a cache lookup.
 
-    ``hit`` is ``None`` on a miss. ``best_similarity`` is the score of the
-    nearest cached prompt regardless of outcome (``None`` only when the cache
-    is empty or Chroma returned nothing), which is what makes threshold
-    tuning measurable.
+    ``hit`` is ``None`` on a miss. ``best_similarity`` is the stage-1 cosine of
+    the nearest cached prompt, and ``best_reranker_score`` is the highest
+    stage-2 score among candidates (``None`` when the cache is empty, no
+    candidate cleared stage 1, or the reranker is disabled). Reporting both on
+    every lookup keeps misses diagnosable — you can see which stage rejected.
     """
 
     hit: CacheHit | None
     best_similarity: float | None
+    best_reranker_score: float | None = None
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One stage-1 nearest neighbour under consideration for reranking."""
+
+    prompt: str
+    answer: str
+    model: str
+    similarity: float
 
 
 def _make_client(
@@ -60,20 +86,30 @@ def _make_client(
 
 
 class SemanticCache:
-    """A cosine-similarity semantic cache over prompt embeddings."""
+    """A two-stage (bi-encoder recall + cross-encoder rerank) semantic cache."""
 
     def __init__(
         self,
         *,
         collection_name: str,
-        similarity_threshold: float,
+        stage1_threshold: float,
+        top_k: int = 5,
+        enable_reranker: bool = True,
+        reranker: "Reranker | None" = None,
         use_remote: bool = False,
         host: str = "localhost",
         port: int = 8000,
         persist_dir: str = "./chroma_data",
         client: "ClientAPI | None" = None,
     ) -> None:
-        self._threshold = similarity_threshold
+        if enable_reranker and reranker is None:
+            raise ValueError(
+                "enable_reranker=True requires a reranker instance."
+            )
+        self._stage1_threshold = stage1_threshold
+        self._top_k = top_k
+        self._enable_reranker = enable_reranker
+        self._reranker = reranker
         self._client: "ClientAPI" = client or _make_client(
             use_remote=use_remote,
             host=host,
@@ -87,9 +123,9 @@ class SemanticCache:
         )
 
     @property
-    def threshold(self) -> float:
-        """The configured minimum cosine similarity for a hit."""
-        return self._threshold
+    def stage1_threshold(self) -> float:
+        """The stage-1 cosine similarity required to become a rerank candidate."""
+        return self._stage1_threshold
 
     @staticmethod
     def _make_id(prompt: str) -> str:
@@ -100,37 +136,93 @@ class SemanticCache:
         """Number of cached entries."""
         return int(self._collection.count())
 
+    def _stage1_candidates(self, embedding: list[float]) -> list[_Candidate]:
+        """Return the top-k nearest cached prompts that clear stage 1.
+
+        Chroma returns neighbours in ascending distance (descending similarity),
+        so the list is already ordered best-first.
+        """
+        result: dict[str, Any] = self._collection.query(
+            query_embeddings=[embedding],
+            n_results=self._top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        distances = (result.get("distances") or [[]])[0]
+        documents = (result.get("documents") or [[]])[0]
+        metadatas = (result.get("metadatas") or [[]])[0]
+
+        candidates: list[_Candidate] = []
+        for distance, answer, metadata in zip(distances, documents, metadatas):
+            similarity = 1.0 - float(distance)
+            if similarity < self._stage1_threshold:
+                continue  # ordered best-first, but keep explicit for clarity
+            meta = metadata or {}
+            candidates.append(
+                _Candidate(
+                    prompt=str(meta.get("prompt", "")),
+                    answer=answer,
+                    model=str(meta.get("model", "unknown")),
+                    similarity=similarity,
+                )
+            )
+        return candidates
+
     def lookup(self, prompt: str, embedding: list[float]) -> LookupResult:
-        """Return the nearest cached match and its similarity, hit or miss."""
+        """Two-stage lookup: bi-encoder recall filter, then cross-encoder rerank.
+
+        Returns a hit only if a candidate clears both stages (or, with the
+        reranker disabled, the stage-1 filter alone). Always reports the best
+        stage-1 similarity and stage-2 score seen so misses are diagnosable.
+        """
         if self._collection.count() == 0:
             return LookupResult(hit=None, best_similarity=None)
 
-        result: dict[str, Any] = self._collection.query(
+        # Peek at the single nearest neighbour so a stage-1 miss still reports
+        # the similarity it rejected.
+        nearest = self._collection.query(
             query_embeddings=[embedding],
             n_results=1,
-            include=["documents", "metadatas", "distances"],
+            include=["distances"],
+        )
+        nearest_distances = (nearest.get("distances") or [[]])[0]
+        best_similarity = (
+            1.0 - float(nearest_distances[0]) if nearest_distances else None
         )
 
-        distances = result.get("distances") or [[]]
-        if not distances or not distances[0]:
-            return LookupResult(hit=None, best_similarity=None)
+        candidates = self._stage1_candidates(embedding)
+        if not candidates:
+            return LookupResult(hit=None, best_similarity=best_similarity)
 
-        distance = float(distances[0][0])
-        similarity = 1.0 - distance
+        # --- Stage 2 disabled: bi-encoder-only fallback (older architecture) --
+        if not self._enable_reranker or self._reranker is None:
+            top = candidates[0]
+            hit = CacheHit(answer=top.answer, similarity=top.similarity, model=top.model)
+            return LookupResult(hit=hit, best_similarity=best_similarity)
 
-        # Miss: no hit, but report the score we rejected so it can be tuned.
-        if similarity < self._threshold:
-            return LookupResult(hit=None, best_similarity=similarity)
+        # --- Stage 2: rerank candidates jointly with the query ---------------
+        scores = self._reranker.score([(prompt, c.prompt) for c in candidates])
+        best_idx = max(range(len(scores)), key=scores.__getitem__)
+        best_reranker_score = scores[best_idx]
 
-        documents = result.get("documents") or [[""]]
-        metadatas = result.get("metadatas") or [[{}]]
-        metadata = metadatas[0][0] or {}
+        if best_reranker_score < self._reranker.threshold:
+            return LookupResult(
+                hit=None,
+                best_similarity=best_similarity,
+                best_reranker_score=best_reranker_score,
+            )
+
+        chosen = candidates[best_idx]
         hit = CacheHit(
-            answer=documents[0][0],
-            similarity=similarity,
-            model=str(metadata.get("model", "unknown")),
+            answer=chosen.answer,
+            similarity=chosen.similarity,
+            model=chosen.model,
+            reranker_score=best_reranker_score,
         )
-        return LookupResult(hit=hit, best_similarity=similarity)
+        return LookupResult(
+            hit=hit,
+            best_similarity=best_similarity,
+            best_reranker_score=best_reranker_score,
+        )
 
     def store(
         self,

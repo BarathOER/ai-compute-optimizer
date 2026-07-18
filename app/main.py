@@ -76,13 +76,15 @@ async def query(
     start = time.perf_counter()
     embedding = services.embedder.embed(payload.prompt)
 
-    # --- Cache lookup ----------------------------------------------------
-    # Keep the nearest-neighbour score even on a miss so it lands in the
-    # response; you cannot tune a threshold you cannot measure.
+    # --- Cache lookup (two-stage) ----------------------------------------
+    # Keep both stage scores even on a miss so they land in the response;
+    # you cannot diagnose or tune a threshold you cannot see.
     best_similarity: float | None = None
+    best_reranker_score: float | None = None
     if not payload.force_refresh:
         lookup = services.cache.lookup(payload.prompt, embedding)
         best_similarity = lookup.best_similarity
+        best_reranker_score = lookup.best_reranker_score
         if lookup.hit is not None:
             hit = lookup.hit
             latency_ms = (time.perf_counter() - start) * 1000.0
@@ -99,6 +101,7 @@ async def query(
                 route="cache",
                 model=hit.model,
                 similarity=hit.similarity,
+                reranker_score=hit.reranker_score,
                 latency_ms=latency_ms,
                 estimated_cost_usd=actual_cost,
                 estimated_savings_usd=savings,
@@ -127,8 +130,9 @@ async def query(
         cache_hit=False,
         route=route,
         model=result.model,
-        # The rejected nearest-neighbour score — this is the tuning signal.
+        # The rejected stage scores — the signal for tuning either threshold.
         similarity=best_similarity,
+        reranker_score=best_reranker_score,
         latency_ms=latency_ms,
         estimated_cost_usd=actual_cost,
         estimated_savings_usd=savings,

@@ -67,7 +67,31 @@ class FakeEmbedder:
 
 
 @dataclass
+class FakeReranker:
+    """Deterministic stand-in for the cross-encoder.
+
+    Scores a ``(query, candidate)`` pair by Jaccard token overlap: identical
+    prompts score 1.0, near-variants score below the (high) threshold. This lets
+    tests exercise stage-2 acceptance and rejection without loading a model.
+    """
+
+    threshold: float
+    model_name: str = "fake-reranker"
+
+    @staticmethod
+    def _jaccard(a: str, b: str) -> float:
+        ta, tb = set(a.lower().split()), set(b.lower().split())
+        if not ta and not tb:
+            return 1.0
+        return len(ta & tb) / len(ta | tb)
+
+    def score(self, pairs: list[tuple[str, str]]) -> list[float]:
+        return [self._jaccard(a, b) for a, b in pairs]
+
+
+@dataclass
 class _Entry:
+    prompt: str
     embedding: list[float]
     answer: str
     model: str
@@ -75,14 +99,13 @@ class _Entry:
 
 @dataclass
 class FakeCache:
-    """In-memory cosine cache mirroring SemanticCache semantics."""
+    """In-memory two-stage cache mirroring SemanticCache semantics."""
 
-    similarity_threshold: float
+    stage1_threshold: float
+    enable_reranker: bool = True
+    reranker: FakeReranker | None = None
+    top_k: int = 5
     _entries: dict[str, _Entry] = field(default_factory=dict)
-
-    @property
-    def threshold(self) -> float:
-        return self.similarity_threshold
 
     def size(self) -> int:
         return len(self._entries)
@@ -95,28 +118,56 @@ class FakeCache:
         return dot / (na * nb)
 
     def lookup(self, prompt: str, embedding: list[float]) -> LookupResult:
-        """Mirror SemanticCache: always report the best similarity seen."""
-        best: tuple[float, _Entry] | None = None
-        for entry in self._entries.values():
-            sim = self._cosine(embedding, entry.embedding)
-            if best is None or sim > best[0]:
-                best = (sim, entry)
-
-        # Empty cache: nothing to compare against.
-        if best is None:
+        """Mirror SemanticCache: stage-1 recall filter, then stage-2 rerank."""
+        if not self._entries:
             return LookupResult(hit=None, best_similarity=None)
 
-        # Miss: no hit, but surface the rejected score for threshold tuning.
-        if best[0] < self.similarity_threshold:
-            return LookupResult(hit=None, best_similarity=best[0])
+        scored = sorted(
+            ((self._cosine(embedding, e.embedding), e) for e in self._entries.values()),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        best_similarity = scored[0][0]
+        candidates = [(s, e) for s, e in scored if s >= self.stage1_threshold][
+            : self.top_k
+        ]
+        if not candidates:
+            return LookupResult(hit=None, best_similarity=best_similarity)
 
-        hit = CacheHit(answer=best[1].answer, similarity=best[0], model=best[1].model)
-        return LookupResult(hit=hit, best_similarity=best[0])
+        # Stage 2 disabled: bi-encoder-only fallback accepts the top candidate.
+        if not self.enable_reranker or self.reranker is None:
+            sim, entry = candidates[0]
+            hit = CacheHit(answer=entry.answer, similarity=sim, model=entry.model)
+            return LookupResult(hit=hit, best_similarity=best_similarity)
+
+        scores = self.reranker.score([(prompt, e.prompt) for _, e in candidates])
+        best_idx = max(range(len(scores)), key=scores.__getitem__)
+        best_reranker_score = scores[best_idx]
+        if best_reranker_score < self.reranker.threshold:
+            return LookupResult(
+                hit=None,
+                best_similarity=best_similarity,
+                best_reranker_score=best_reranker_score,
+            )
+        sim, entry = candidates[best_idx]
+        hit = CacheHit(
+            answer=entry.answer,
+            similarity=sim,
+            model=entry.model,
+            reranker_score=best_reranker_score,
+        )
+        return LookupResult(
+            hit=hit,
+            best_similarity=best_similarity,
+            best_reranker_score=best_reranker_score,
+        )
 
     def store(
         self, prompt: str, embedding: list[float], answer: str, model: str
     ) -> None:
-        self._entries[prompt] = _Entry(embedding=embedding, answer=answer, model=model)
+        self._entries[prompt] = _Entry(
+            prompt=prompt, embedding=embedding, answer=answer, model=model
+        )
 
 
 @dataclass
@@ -135,9 +186,12 @@ class FakeLLM:
 
 @pytest.fixture
 def settings() -> Settings:
-    """Test settings with a low-ish threshold and a small word threshold."""
+    """Test settings: two-stage thresholds plus a small word threshold."""
     return Settings(
-        similarity_threshold=0.9,
+        stage1_threshold=0.7,
+        rerank_top_k=5,
+        enable_reranker=True,
+        reranker_threshold=0.943,
         complexity_word_threshold=8,
         remote_input_cost_per_1m=1.50,
         remote_output_cost_per_1m=9.00,
@@ -153,13 +207,20 @@ def fake_llm() -> FakeLLM:
     return FakeLLM()
 
 
-@pytest.fixture
-def services(settings: Settings, fake_llm: FakeLLM) -> Services:
-    """A Services container built entirely from fakes."""
+def build_fake_services(
+    settings: Settings, fake_llm: FakeLLM, *, enable_reranker: bool = True
+) -> Services:
+    """Assemble a Services container from fakes, reranker on or off."""
+    reranker = FakeReranker(threshold=settings.reranker_threshold) if enable_reranker else None
     return Services(
         settings=settings,
         embedder=FakeEmbedder(),
-        cache=FakeCache(similarity_threshold=settings.similarity_threshold),
+        cache=FakeCache(
+            stage1_threshold=settings.stage1_threshold,
+            enable_reranker=enable_reranker,
+            reranker=reranker,
+            top_k=settings.rerank_top_k,
+        ),
         router=ComplexityRouter(settings.complexity_word_threshold),
         llm=fake_llm,
         metrics=Metrics(
@@ -169,19 +230,43 @@ def services(settings: Settings, fake_llm: FakeLLM) -> Services:
             local_output_cost_per_1m=settings.local_output_cost_per_1m,
             monthly_query_volume=settings.projected_monthly_queries,
         ),
+        reranker=reranker,
     )
 
 
 @pytest.fixture
-def client(services: Services):
-    """A TestClient whose Services dependency is overridden with fakes.
+def services(settings: Settings, fake_llm: FakeLLM) -> Services:
+    """Two-stage Services (reranker enabled) built entirely from fakes."""
+    return build_fake_services(settings, fake_llm, enable_reranker=True)
+
+
+@pytest.fixture
+def services_no_reranker(settings: Settings, fake_llm: FakeLLM) -> Services:
+    """Bi-encoder-only Services (stage 2 bypassed) for the A/B fallback path."""
+    return build_fake_services(settings, fake_llm, enable_reranker=False)
+
+
+def _client_for(services: Services) -> TestClient:
+    """A TestClient with the Services dependency overridden by ``services``.
 
     ``TestClient`` is used *without* its context-manager form so the app's
     lifespan (which would build real chromadb/sentence-transformers services)
-    does not run. Handlers resolve ``get_services`` through the override below.
+    does not run. Handlers resolve ``get_services`` through the override.
     """
     app.dependency_overrides[get_services] = lambda: services
     app.state.services = services
-    test_client = TestClient(app)
+    return TestClient(app)
+
+
+@pytest.fixture
+def client(services: Services):
+    test_client = _client_for(services)
+    yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_no_reranker(services_no_reranker: Services):
+    test_client = _client_for(services_no_reranker)
     yield test_client
     app.dependency_overrides.clear()

@@ -28,7 +28,13 @@ class QueryResponse(BaseModel):
     model: str = Field(description="Model that produced the answer.")
     similarity: float | None = Field(
         default=None,
-        description="Cosine similarity of the matched cache entry, if any.",
+        description="Stage-1 cosine similarity of the nearest cache entry "
+        "(reported on hits and misses for diagnosability).",
+    )
+    reranker_score: float | None = Field(
+        default=None,
+        description="Stage-2 cross-encoder score of the best candidate, if the "
+        "reranker ran (not a calibrated probability).",
     )
     latency_ms: float = Field(description="End-to-end server latency.")
     estimated_cost_usd: float = Field(

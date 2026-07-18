@@ -1,0 +1,8 @@
+# Extra dependencies for the offline threshold evaluation only.
+# Install alongside the project root requirements.txt:
+#     pip install -r requirements.txt -r eval/requirements.txt
+#
+# numpy / pandas / sentence-transformers already come from the root file;
+# these are the eval-only additions.
+datasets==3.2.0
+matplotlib==3.10.0

@@ -16,6 +16,7 @@ from app.config import Settings
 from app.embeddings import Embedder
 from app.llm import LLMClient
 from app.metrics import Metrics
+from app.reranker import Reranker
 from app.router import ComplexityRouter
 
 
@@ -29,14 +30,27 @@ class Services:
     router: ComplexityRouter
     llm: LLMClient
     metrics: Metrics
+    reranker: Reranker | None = None
 
 
 def build_services(settings: Settings) -> Services:
-    """Construct real Services from settings (called during app startup)."""
+    """Construct real Services from settings (called during app startup).
+
+    The cross-encoder reranker is loaded here, once, so its (multi-hundred-MB)
+    weights are initialized at startup rather than on the first request.
+    """
     embedder = Embedder(settings.embedding_model)
+    reranker = (
+        Reranker(settings.reranker_model, settings.reranker_threshold)
+        if settings.enable_reranker
+        else None
+    )
     cache = SemanticCache(
         collection_name=settings.chroma_collection,
-        similarity_threshold=settings.similarity_threshold,
+        stage1_threshold=settings.stage1_threshold,
+        top_k=settings.rerank_top_k,
+        enable_reranker=settings.enable_reranker,
+        reranker=reranker,
         use_remote=settings.use_remote_chroma,
         host=settings.chroma_host or "localhost",
         port=settings.chroma_port,
@@ -64,6 +78,7 @@ def build_services(settings: Settings) -> Services:
         router=router,
         llm=llm,
         metrics=metrics,
+        reranker=reranker,
     )
 
 

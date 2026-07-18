@@ -36,17 +36,54 @@ def test_cache_hit_returns_cached_answer_without_llm(client, fake_llm) -> None:
     assert first.json()["cache_hit"] is False
     assert len(fake_llm.calls) == 1
 
-    # Same semantic content -> cosine similarity above threshold -> hit.
+    # Same content -> stage-1 cosine high AND stage-2 reranker clears -> hit.
     second = client.post("/query", json={"prompt": "capital of france"})
     body = second.json()
     assert body["cache_hit"] is True
     assert body["route"] == "cache"
     assert body["similarity"] >= 0.9
+    # Stage-2 ran and accepted: the reranker score is reported on the hit.
+    assert body["reranker_score"] is not None
+    assert body["reranker_score"] >= 0.943
     assert body["estimated_cost_usd"] == 0.0
     assert body["estimated_savings_usd"] > 0.0
 
     # Crucially, no second LLM call happened.
     assert len(fake_llm.calls) == 1
+
+
+def test_two_stage_reranker_rejects_stage1_match(client, fake_llm) -> None:
+    """A prompt that clears stage 1 but not the reranker is a miss (diagnosable)."""
+    client.post("/query", json={"prompt": "capital of france"})
+    assert len(fake_llm.calls) == 1
+
+    # "capital of france please" embeds identically (extra word is out of the
+    # fake vocab), so stage-1 cosine passes -- but the reranker scores the
+    # non-identical pair below threshold and rejects it.
+    response = client.post("/query", json={"prompt": "capital of france please"})
+    body = response.json()
+    assert body["cache_hit"] is False
+    assert body["similarity"] >= 0.9  # stage 1 did match
+    assert body["reranker_score"] is not None
+    assert body["reranker_score"] < 0.943  # but stage 2 rejected it
+    # The reranker miss fell through to the LLM.
+    assert len(fake_llm.calls) == 2
+
+
+def test_reranker_disabled_accepts_stage1_match(client_no_reranker, fake_llm) -> None:
+    """With the reranker off, a stage-1 match alone is a hit (bi-encoder-only)."""
+    client_no_reranker.post("/query", json={"prompt": "capital of france"})
+    assert len(fake_llm.calls) == 1
+
+    # Same near-variant as above: rejected in two-stage mode, accepted here.
+    response = client_no_reranker.post(
+        "/query", json={"prompt": "capital of france please"}
+    )
+    body = response.json()
+    assert body["cache_hit"] is True
+    assert body["route"] == "cache"
+    assert body["reranker_score"] is None  # stage 2 never ran
+    assert len(fake_llm.calls) == 1  # served from cache, no new LLM call
 
 
 def test_force_refresh_bypasses_cache(client, fake_llm) -> None:
