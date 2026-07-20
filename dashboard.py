@@ -143,6 +143,14 @@ html, body, [class*="css"] {
 .hero-caption { margin-top:1rem; font-size:.86rem; color:#94a3b8;
   border-top:1px solid rgba(255,255,255,.1); padding-top:.8rem; }
 .hero-caption b { color:#cbd5e1; }
+.hero-callout { margin-top:.85rem; background:var(--card); border:1px solid var(--border);
+  border-left:3px solid var(--amber); border-radius:12px; padding:.85rem 1.15rem;
+  box-shadow:var(--shadow); font-size:.92rem; color:#334155; }
+.hero-callout b { color:var(--ink); font-weight:750; }
+.callout-tag { display:inline-block; font-size:.68rem; font-weight:800; letter-spacing:.05em;
+  text-transform:uppercase; color:#b45309; background:#fdf1e3; padding:.16rem .5rem;
+  border-radius:6px; margin-right:.6rem; }
+.callout-note { color:var(--muted); font-size:.85rem; }
 
 /* KPI grid */
 .kpi-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:1rem; margin-top:1rem; }
@@ -182,15 +190,17 @@ html, body, [class*="css"] {
 
 /* Sensitivity grid */
 .table-wrap { overflow-x:auto; }
-.sens-table { width:100%; border-collapse:separate; border-spacing:0; font-size:.9rem; }
-.sens-table th, .sens-table td { padding:.7rem .85rem; text-align:right;
-  border-bottom:1px solid #eef1f5; font-variant-numeric: tabular-nums; white-space:nowrap; }
-.sens-table th { color:var(--muted); font-weight:700; font-size:.78rem;
+.sens-table { width:100%; border-collapse:separate; border-spacing:0; font-size:.92rem; }
+.sens-table th, .sens-table td { padding:.7rem .9rem; text-align:right;
+  border-bottom:1px solid #e6e8ec; font-variant-numeric: tabular-nums; white-space:nowrap; }
+.sens-table td { color:#0f172a; background:#fff; font-weight:600; }  /* all cells legible */
+.sens-table th { color:#475569; font-weight:700; font-size:.78rem;
   text-transform:uppercase; letter-spacing:.03em; }
-.sens-table th:first-child, .sens-table td:first-child { text-align:left; font-weight:600; }
-.sens-measured { background:#f1f9f5; }
+.sens-table th:first-child, .sens-table td:first-child { text-align:left; }
+.sens-table td:first-child { color:#334155; }
 .sens-measured-h { color:#047857; }
-.sens-hero-cell { background:#059669; color:#fff; font-weight:800; }
+/* Only the validated 100K x 44.4% cell is highlighted (more specific than td). */
+.sens-table td.sens-hero-cell { background:#059669; color:#fff; font-weight:800; }
 
 /* Live session */
 .live-head { display:flex; align-items:center; gap:.6rem; margin-bottom:.2rem; }
@@ -420,6 +430,18 @@ def render_executive(data: dict) -> None:
         unsafe_allow_html=True,
     )
 
+    # Secondary upside scenario — clearly labeled as a ceiling, NOT the headline.
+    enterprise = project_savings(
+        1_000_000, 0.60, AVG_INPUT_TOKENS, AVG_OUTPUT_TOKENS,
+        INPUT_PRICE_PER_1M, OUTPUT_PRICE_PER_1M,
+    )["annual_savings_usd"]
+    st.markdown(
+        f'<div class="hero-callout"><span class="callout-tag">Upper-bound scenario</span>'
+        f'At enterprise scale (1M queries/mo, 60% hit rate): <b>~{money(enterprise)}/yr</b> '
+        f'<span class="callout-note">— illustrative ceiling, not the headline.</span></div>',
+        unsafe_allow_html=True,
+    )
+
     # Live-session secondary values (this running server only).
     live_hr = data.get("hit_rate", 0.0)
     live_req = data.get("total_requests", 0)
@@ -464,8 +486,7 @@ def render_savings_grid() -> None:
         for hr in SCENARIO_HIT_RATES:
             measured_col = abs(hr - MEASURED_HIT_RATE) < 1e-9
             hero_cell = measured_col and vol == BENCH_VOLUME
-            cls = "sens-hero-cell" if hero_cell else ("sens-measured" if measured_col else "")
-            attr = f' class="{cls}"' if cls else ""
+            attr = ' class="sens-hero-cell"' if hero_cell else ""
             cells.append(f"<td{attr}>{money(row[hr])}</td>")
         body_rows.append(f'<tr>{"".join(cells)}</tr>')
 
