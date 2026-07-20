@@ -9,7 +9,7 @@ two stages:
     Stage 1 (recall): ask Chroma for the top-k nearest cached prompts and keep
         those with cosine similarity >= ``stage1_threshold`` (default 0.70,
         tuned for recall — it decides *candidates*, not hits).
-    Stage 2 (precision): a cross-encoder rerules those candidates by reading the
+    Stage 2 (precision): a cross-encoder reranks those candidates by reading the
         query and the cached prompt jointly; accept a hit only if the best
         reranker score clears ``reranker.threshold``.
 
