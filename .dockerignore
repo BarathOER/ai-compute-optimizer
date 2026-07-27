@@ -16,3 +16,7 @@ chroma_data
 README.md
 tests
 *.md
+# Host-only tooling — not part of the served app image.
+eval
+dashboard.py
+benchmark.py

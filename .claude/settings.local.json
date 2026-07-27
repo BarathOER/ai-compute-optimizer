@@ -20,7 +20,9 @@
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe -m pytest tests/test_reranker.py -q)",
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe eval/savings_model.py)",
       "Bash(D:/anaconda/envs/cis6020-ml/python.exe eval/savings_model.py --help)",
-      "Bash(D:/anaconda/envs/cis6020-ml/python.exe -c \"import streamlit; print\\('streamlit', streamlit.__version__\\)\")"
+      "Bash(D:/anaconda/envs/cis6020-ml/python.exe -c \"import streamlit; print\\('streamlit', streamlit.__version__\\)\")",
+      "Bash(docker --version)",
+      "Bash(docker info *)"
     ]
   }
 }

@@ -15,11 +15,13 @@ services:
       RERANKER_MODEL: "cross-encoder/quora-distilroberta-base"
       RERANKER_THRESHOLD: "0.943"
       COMPLEXITY_WORD_THRESHOLD: "40"
-      # Reach an Ollama running on the Docker host.
+      # Reach an Ollama running on the Docker HOST (not in a container).
       OLLAMA_HOST: "http://host.docker.internal:11434"
       OLLAMA_MODEL: "llama3.2"
+      # Secret injected at runtime from the host env / project .env — NEVER baked
+      # into the image. Empty by default so the app still boots without a key.
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      GEMINI_MODEL: "gemini-1.5-flash"
+      GEMINI_MODEL: "gemini-3.5-flash"
       REMOTE_INPUT_COST_PER_1M: "1.50"
       REMOTE_OUTPUT_COST_PER_1M: "9.00"
       LOCAL_INPUT_COST_PER_1M: "0.0"
