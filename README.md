@@ -1,163 +1,141 @@
 # ⚡ AI Compute Optimizer
 
-An **LLM cost-reduction API gateway**. It sits in front of your language models
-and cuts token spend two ways:
+**An LLM cost-optimization gateway — a two-stage semantic cache + model router that sits in front of your LLMs and stops you paying full price for questions you've already answered.**
 
-1. **Semantic caching** — semantically similar prompts are served from a
-   ChromaDB vector cache instead of hitting a model at all.
-2. **Complexity-based routing** — simple prompts go to a cheap **local** model
-   (Ollama); only genuinely complex prompts reach a paid **remote** model
-   (Gemini).
+<p>
+<img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white">
+<img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
+<img alt="tests" src="https://img.shields.io/badge/tests-28%20passing-2ea44f">
+<img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
 
-Every request is timed and priced, and the gateway reports a running estimate of
-the money saved versus an "always call the frontier model" baseline.
+## Headline numbers
+
+| Metric | Result | Measured by |
+|--------|--------|-------------|
+| **Latency speedup** (cache hit vs. LLM miss) | **282×** — 14.2 s → 50 ms | [`benchmark.py`](benchmark.py) |
+| **Cost reduction** vs. an all-remote gateway | **69.4%** | [`benchmark.py`](benchmark.py) |
+| **Cache hit rate at 95% precision** | **44.4%** | [`eval/two_stage_eval.py`](eval/two_stage_eval.py) |
+| **Projected savings** @ 100K queries/mo | **$2,636/yr** | [`eval/savings_model.py`](eval/savings_model.py) |
+
+Every number above is reproducible from the scripts cited — not hand-waved. The precision figure is validated against **5,000 human-labeled question pairs**, and the projection labels every input `MEASURED` or `ASSUMED`.
+
+---
+
+## The problem
+
+Companies pay the **full LLM API price for semantically duplicate queries**. "How do I reset my password?" and "I forgot my password, what now?" are the same question — but a naive gateway embeds each, sends both to a frontier model, and pays twice. At scale, a large fraction of production traffic is rephrasings of a small set of intents.
+
+The obvious fix — cache answers by semantic similarity — is a trap: **a single cosine-similarity threshold cannot reliably tell "same question" from "similar-looking but different question."** Set it loose and you serve wrong answers; set it tight and you cache almost nothing. This project is about doing the caching *correctly*, and proving it.
 
 ---
 
 ## Architecture
 
-```
-                         ┌──────────────────────────────────────────────┐
-   POST /query           │                FastAPI gateway               │
-  ────────────────────►  │                                              │
-   { "prompt": "..." }   │   embeddings.py   embed(prompt)              │
-                         │        │                                     │
-                         │        ▼                                     │
-                         │   cache.py  stage 1: top-k cosine ≥ 0.70 ───┼──► ChromaDB
-                         │        │    stage 2: cross-encoder rerank    │    (vector store)
-                         │   hit  │    (reranker.py) ≥ RERANKER_THRESHOLD│
-                         │   ◄────┘    │ miss                           │
-                         │             ▼                                │
-                         │   router.py  simple? ──► Ollama (local)  ────┼──► llama3.2
-                         │              complex? ─► Gemini (remote)  ───┼──► gemini-1.5-flash
-                         │                    │                         │
-                         │                    ▼                         │
-                         │   cache.py  store(answer)                    │
-                         │   metrics.py  record(latency, cost, savings) │
-   { "answer", ... }     │                                              │
-  ◄────────────────────  │                                              │
-                         └──────────────────────────────────────────────┘
+Incoming prompt → embed → **stage-1 bi-encoder recall filter** → **stage-2 cross-encoder reranker** → cache hit (return, ~50 ms, $0) or **route** to a cheap local model / a frontier remote model.
+
+```mermaid
+flowchart LR
+    Q["POST /query"] --> E["embed prompt<br/>(all-MiniLM-L6-v2)"]
+    E --> S1{"Stage 1: bi-encoder<br/>ChromaDB top-k<br/>cosine >= 0.70?"}
+    S1 -- "no candidate" --> R["Router<br/>(complexity)"]
+    S1 -- "candidates" --> S2{"Stage 2: cross-encoder<br/>rerank score >= 0.943?"}
+    S2 -- "HIT" --> HIT["Return cached answer<br/>~50 ms · $0"]
+    S2 -- "miss" --> R
+    R -- "simple" --> L["Ollama<br/>(local, cheap)"]
+    R -- "complex" --> G["Gemini<br/>(remote, frontier)"]
+    L --> ST["Store in cache"]
+    G --> ST
+    ST --> OUT["Return answer<br/>+ latency/cost metrics"]
 ```
 
-**Request flow (`/query`):** embed the prompt → look it up in the semantic cache
-via **two-stage retrieval** (below) → on a hit, return the cached answer at zero
-token cost → on a miss, the router picks the local or remote model by
-complexity, generates an answer, stores it in the cache, and returns it. Latency
-and estimated cost are recorded for every request.
+**Why two stages?** Stage 1 (bi-encoder cosine) is fast but blunt — it encodes each prompt independently, so it's good for *recall* (cheaply narrowing millions of cached prompts to a handful of candidates) but bad for *precision*. Stage 2 (cross-encoder) reads the query and each candidate **jointly**, catching the fine distinctions that flip meaning. Tuned so stage 1 maximizes recall and stage 2 enforces 95% precision.
 
-### Two-stage semantic cache
-
-A single bi-encoder cosine threshold does not work here: offline evaluation
-(see [eval/](eval/)) showed a bi-encoder alone reaches only **7.7% recall at 95%
-precision** on QQP, and that three different bi-encoders hit the same wall — the
-limit is architectural (encoding each prompt independently loses the
-distinctions that flip meaning). So the cache retrieves in two stages:
-
-1. **Stage 1 — recall filter (bi-encoder).** Chroma returns the top-`RERANK_TOP_K`
-   nearest cached prompts; those with cosine ≥ `STAGE1_THRESHOLD` (default 0.70,
-   tuned for *recall*, not precision) become candidates.
-2. **Stage 2 — precision (cross-encoder rerank).** A cross-encoder
-   ([app/reranker.py](app/reranker.py)) reads the query and each candidate
-   *jointly* and accepts a hit only if the best score clears
-   `RERANKER_THRESHOLD`. This lifts recall to **68.8% at 95% precision** for
-   ~+12 ms/query.
-
-Set `ENABLE_RERANKER=false` to fall back to bi-encoder-only matching (the older
-architecture) for A/B comparison. `LookupResult` reports both the stage-1
-similarity and the stage-2 reranker score, and the `/query` response surfaces
-them, so misses stay diagnosable. **Note:** the reranker score is *not* a
-calibrated probability — `RERANKER_THRESHOLD=0.943` is an empirical cut point
-for `cross-encoder/quora-distilroberta-base`; re-tune it via
-[eval/two_stage_eval.py](eval/two_stage_eval.py) if you change the model.
-
-### Module map
-
-| File | Responsibility |
-|------|----------------|
-| [app/main.py](app/main.py) | FastAPI app, lifespan wiring, `/health` `/query` `/metrics` |
-| [app/config.py](app/config.py) | Settings from environment variables (no hardcoded keys) |
-| [app/models.py](app/models.py) | Pydantic request/response schemas |
-| [app/embeddings.py](app/embeddings.py) | sentence-transformers prompt embeddings (lazy load) |
-| [app/cache.py](app/cache.py) | Two-stage ChromaDB cache: cosine recall filter + rerank |
-| [app/reranker.py](app/reranker.py) | Cross-encoder reranker (stage 2), loaded once at startup |
-| [app/router.py](app/router.py) | Complexity heuristic → `local` / `remote` |
-| [app/llm.py](app/llm.py) | Ollama (httpx) and Gemini (google-generativeai) backends |
-| [app/metrics.py](app/metrics.py) | Latency + estimated token-cost + savings tracking |
-| [app/services.py](app/services.py) | DI container so tests can inject fakes |
+| Module | Responsibility |
+|--------|----------------|
+| [`app/main.py`](app/main.py) | FastAPI app, lifespan wiring, `/health` · `/query` · `/metrics` |
+| [`app/embeddings.py`](app/embeddings.py) | Bi-encoder prompt embeddings (sentence-transformers) |
+| [`app/cache.py`](app/cache.py) | **Two-stage** ChromaDB cache: cosine recall filter + rerank |
+| [`app/reranker.py`](app/reranker.py) | Cross-encoder reranker (stage 2), loaded once at startup |
+| [`app/router.py`](app/router.py) | Complexity heuristic → `local` / `remote` |
+| [`app/llm.py`](app/llm.py) | Ollama (local) and Gemini (remote) backends |
+| [`app/metrics.py`](app/metrics.py) | Latency, token-cost, and savings tracking |
+| [`app/savings.py`](app/savings.py) | Shared savings-projection math (single source of truth) |
+| [`app/config.py`](app/config.py) | Env-driven settings (no hardcoded keys) |
 
 ---
 
-## Metrics
+## The engineering story
 
-The gateway exposes a live snapshot at **`GET /metrics`**:
+**This is the part that matters. The headline numbers exist because the first design was wrong and I proved it, rather than shipping a plausible-looking threshold and hoping.**
 
-| Metric | Meaning |
-|--------|---------|
-| `total_requests` | Requests handled |
-| `cache_hits` / `cache_misses` | Served from cache vs. forwarded to a model |
-| `hit_rate` | `cache_hits / total_requests` |
-| `local_routes` / `remote_routes` | Miss traffic split by the router |
-| `avg_latency_ms` | Mean end-to-end latency |
-| `avg_hit_latency_ms` / `avg_miss_latency_ms` | Latency split by cache outcome |
-| `total_input_tokens` / `total_output_tokens` | Prompt vs. completion tokens seen |
-| `avg_input_tokens` / `avg_output_tokens` | Per-query averages (drive the projection) |
-| `total_cost_usd` | Estimated actual spend |
-| `total_baseline_cost_usd` | What "always remote" would have cost |
-| `total_savings_usd` | `baseline − actual` — the headline number |
-| `projection` | Volume-based monthly/annual savings forecast (see below) |
+### 1. I started with a hand-picked threshold — `SIMILARITY_THRESHOLD = 0.85`
 
-**Cost model.** Tokens are estimated at ~4 characters/token. Real LLM pricing
-bills **input (prompt)** and **output (completion)** tokens at different rates —
-output is ~6x input — so each is counted and priced separately, per 1M tokens,
-via `REMOTE_INPUT_COST_PER_1M` / `REMOTE_OUTPUT_COST_PER_1M` (and the `LOCAL_*`
-equivalents). Defaults reflect Gemini 3.5 Flash list pricing ($1.50 input /
-$9.00 output per 1M, verified July 2026). Cache hits cost `$0` and save the full
-remote price; local routes are priced at the local rate (default free). Per-request
-savings is the remote baseline cost minus the actual cost, so both caching and
-local routing contribute.
+Chosen the way most semantic caches are: by eyeballing a handful of prompts. It *looked* fine. That was the whole problem — it was never measured.
 
-**Savings projection.** `snapshot().projection` (exposed under `projection` in
-`/metrics`) forecasts the cache's dollar value at production scale. Given
-`PROJECTED_MONTHLY_QUERIES`, it applies the *measured* hit rate and average
-input/output tokens per query against a no-cache baseline:
+### 2. Validated it against 5,000 human-labeled QQP pairs — and it was indefensible
 
-```
-avg_remote_cost_per_query = remote_price(avg_input_tokens, avg_output_tokens)
-projected_monthly_savings = monthly_queries × hit_rate × avg_remote_cost_per_query
-projected_annual_savings  = projected_monthly_savings × 12
-```
+I turned the cache into what it actually is — a duplicate-question classifier — and scored it on 5,000 [Quora Question Pairs](https://huggingface.co/datasets/quora) with human duplicate/not-duplicate labels ([`eval/threshold_eval.py`](eval/threshold_eval.py)). The result: the two classes **overlap so heavily that no cosine threshold separates them**. The best-F1 operating point delivered only ~64% precision — i.e. **more than a third of cache hits would return the wrong answer.** `0.85` was a guess, and the guess was bad.
 
-The projection is a *single point* built on one assumed volume, so it ships with
-a **`basis`** field labeling each input `MEASURED` (hit rate, tokens, prices) or
-`ASSUMED` (volume, that local routes cost $0, that future traffic resembles
-observed) — the API never presents the number as fact. For a defensible
-**multi-scenario sensitivity table** (savings across volumes × hit rates, with a
-full assumptions/caveats section), run
-[eval/savings_model.py](eval/savings_model.py).
+![Precision / recall / F1 vs. cosine threshold](eval/results/precision_recall_vs_threshold.png)
+
+### 3. Three different bi-encoders all hit the same wall → the limit is architectural
+
+Maybe the embedder was just weak? I benchmarked three — `all-MiniLM-L6-v2`, `all-mpnet-base-v2`, and `BAAI/bge-small-en-v1.5` — on the identical sample ([`eval/compare_models.py`](eval/compare_models.py)). **All three collapsed the same way** (class-separation gap of +0.010 to +0.026 — essentially zero). This isn't a bad model; it's a **bi-encoder architecture** limit: encoding each sentence independently destroys the distinctions that flip meaning ("how do I *learn* X" vs. "how do I *teach* X").
+
+![Precision-recall across three bi-encoders](eval/results/precision_recall_comparison.png)
+
+### 4. Two-stage retrieval fixed it: 7.7% → 68.8% recall at 95% precision, for +12 ms
+
+A bi-encoder alone reached only **7.7% recall at 95% precision**. Adding a **cross-encoder reranker** as stage 2 — which reads both questions together — lifted that to **68.8% recall at the same 95% precision**, at a cost of ~**+12 ms** per query ([`eval/two_stage_eval.py`](eval/two_stage_eval.py)). That is the entire ballgame: ~9× more duplicate traffic captured, without lowering the precision bar.
+
+![Bi-encoder alone vs. two-stage, QQP validation](eval/results/precision_recall_two_stage_qqp_validation.png)
+
+### 5. Checked for contamination — the reranker isn't just memorizing
+
+`cross-encoder/quora-distilroberta-base` was trained on Quora data, and GLUE QQP *is* Quora data — so a strong score could be memorization, not skill. I measured the same operating point on train vs. a held-out split ([`eval/contamination_check.py`](eval/contamination_check.py)): **QQP-train 66.8% vs. QQP-validation 68.8% — no drop.** The result generalizes across the split; it isn't recall of training pairs.
+
+### 6. Stress-tested on PAWS — and documented where it breaks
+
+I ran it against **PAWS**, an adversarial paraphrase set (word-swaps and entity substitutions that keep the vocabulary but invert the meaning: *"a flight from NYC to LA"* vs. *"a flight from LA to NYC"*). Precision drops — this is a **scope limitation, not contamination**. The reranker keys on lexical overlap, so entity-swapped pairs are exactly its blind spot. I did not hide this: production traffic that is adversarial in this way would need a **third tier — an LLM judge to adjudicate borderline scores, or a domain-fine-tuned reranker.**
+
+> The selling point isn't that the first design was perfect. It's that I built the evaluation to catch my own wrong assumption, fixed it with a principled architecture, and mapped the boundary where even the fix stops working.
 
 ---
 
-## Running it
+## Honest limitations
 
-### Prerequisites
-- Python 3.11+
-- (Optional) [Ollama](https://ollama.com) running locally with a model pulled:
-  `ollama pull llama3.2`
-- (Optional) A Gemini API key for remote routing:
-  <https://aistudio.google.com/app/apikey>
+- **PAWS / adversarial inputs.** The reranker fails on entity-swapped, near-identical-vocabulary pairs (see step 6). A production deployment handling adversarial input needs a third-tier LLM judge or a fine-tuned reranker. Measured and disclosed, not hidden.
+- **Local inference is modeled at $0.** The cost figures count *avoided API spend*. Self-hosted (Ollama) inference still costs GPU/compute/electricity, so the savings are optimistic as "true margin" — they're accurate as "money not sent to the API."
+- **Hit rate is workload-dependent.** The 44.4% figure comes from a repetitive, benchmark-style workload. Real savings scale with how repetitive *your* traffic actually is — which is why [`eval/savings_model.py`](eval/savings_model.py) reports a full volume × hit-rate sensitivity grid instead of a single number.
 
-### 1. Local (bare metal)
+---
+
+## Tech stack
+
+**API:** FastAPI · Pydantic · Uvicorn (async)
+**Retrieval:** sentence-transformers (bi-encoder `all-MiniLM-L6-v2` + cross-encoder `quora-distilroberta-base`) · ChromaDB (cosine vector store)
+**LLM backends:** Ollama (local) · Google Gemini (remote)
+**Eval & ops:** pytest · Streamlit dashboard · Docker / docker-compose · HuggingFace `datasets` (QQP, PAWS)
+
+---
+
+## Setup & run
+
+**Prerequisites:** Python 3.11+. Optionally [Ollama](https://ollama.com) on the host (`ollama pull llama3.2`) for the local route, and a [Gemini API key](https://aistudio.google.com/app/apikey) for the remote route.
+
+### Local (uvicorn)
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env             # then edit values / add GEMINI_API_KEY
+cp .env.example .env               # then add GEMINI_API_KEY
 uvicorn app.main:app --reload
 ```
 
-The API is now at <http://localhost:8000> (docs at `/docs`).
+API at <http://localhost:8000> (interactive docs at `/docs`):
 
 ```bash
 curl -X POST http://localhost:8000/query \
@@ -165,85 +143,92 @@ curl -X POST http://localhost:8000/query \
   -d '{"prompt": "What is the capital of France?"}'
 ```
 
-### 2. Docker Compose (app + ChromaDB)
+Send it once, then send a reworded version — the second comes back `"cache_hit": true` with the stage-1 similarity and stage-2 reranker score in the response.
+
+### Evaluation suite
+
+Everything in the engineering story is reproducible:
 
 ```bash
-export GEMINI_API_KEY=your-key-here   # optional
-docker compose up --build
+pip install -r requirements.txt -r eval/requirements.txt
+
+python eval/threshold_eval.py   --dataset qqp --split validation --n 5000   # the wall
+python eval/compare_models.py \
+    sentence-transformers/all-MiniLM-L6-v2 \
+    sentence-transformers/all-mpnet-base-v2 \
+    BAAI/bge-small-en-v1.5 --dataset qqp                                     # 3 bi-encoders
+python eval/two_stage_eval.py   --dataset qqp --split validation            # the fix
+python eval/contamination_check.py                                          # train vs val vs PAWS
+python eval/savings_model.py                                                # savings sensitivity grid
 ```
 
-This starts the gateway (`:8000`) and a ChromaDB server (`:8001`). Ollama is
-expected on the Docker **host** and is reached via `host.docker.internal`.
+Plots and CSVs land in [`eval/results/`](eval/results/). See [`eval/README.md`](eval/README.md) for the full methodology.
 
-### 3. Benchmark
-
-With the gateway running:
-
-```bash
-python benchmark.py --url http://localhost:8000 --rounds 2
-```
-
-Round 1 populates the cache (misses); round 2 should be mostly hits. The script
-prints per-phase latency (avg/p95), the cold/warm speedup, and total estimated
-savings versus all-remote.
-
-### 4. Dashboard
+### Dashboard
 
 ```bash
 streamlit run dashboard.py
 ```
 
-Shows hit rate, hit-vs-miss latency, routing split, and cumulative cost saved.
-Set `GATEWAY_URL` if the gateway is not on `localhost:8000`.
+A FinOps-style view: validated headline savings, a sensitivity grid, the trust/precision story, a clearly-separated live-session panel, and an interactive query tester.
 
-### 5. Tests
+### Tests
 
 ```bash
-pytest
+pytest        # 28 tests: health, two-stage cache hit/miss, routing, cost model, reranker normalization
 ```
 
-Tests cover **health**, **cache hit**, **cache miss**, **routing**, and the
-**two-stage cache** (stage-2 rejection of a stage-1 match, and the
-reranker-disabled fallback). They use in-memory fakes injected through FastAPI's
-dependency overrides, so no models are downloaded and no network calls are
-made — the same suite runs in CI
-([.github/workflows/ci.yml](.github/workflows/ci.yml)) on every push.
+---
+
+## Docker
+
+The image installs the full stack (CPU-only PyTorch, sentence-transformers, ChromaDB) and **pre-downloads both models at build time** so startup is fast and needs no network. Secrets are injected at runtime — never baked into the image.
+
+```bash
+# Ollama runs on the HOST; the container reaches it via host.docker.internal.
+export GEMINI_API_KEY=your-key-here     # optional; or put it in .env
+
+docker compose up --build               # starts the gateway (:8000) + ChromaDB
+```
+
+```bash
+docker compose ps                       # app becomes "healthy" after ~1 min
+curl http://localhost:8000/health
+docker compose logs -f app
+```
+
+Single container (local Chroma, no compose):
+
+```bash
+docker build -t aco-gateway .
+docker run --rm -p 8000:8000 \
+  --add-host host.docker.internal:host-gateway \
+  -e GEMINI_API_KEY=$GEMINI_API_KEY aco-gateway
+```
+
+See the [Dockerfile](Dockerfile) for the image-size vs. startup-time tradeoff (CPU torch + baked models; `HF_HUB_OFFLINE=1` at runtime).
 
 ---
 
 ## Configuration
 
-All settings come from environment variables (see [.env.example](.env.example)).
-Key knobs:
+All settings come from environment variables — see [`.env.example`](.env.example). Key knobs:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `STAGE1_THRESHOLD` | `0.70` | Min cosine similarity to become a stage-2 rerank candidate (recall filter) |
+| `STAGE1_THRESHOLD` | `0.70` | Stage-1 cosine cut to become a rerank candidate (recall) |
 | `RERANK_TOP_K` | `5` | Nearest cached prompts retrieved for reranking |
 | `ENABLE_RERANKER` | `true` | Stage 2 on; `false` = bi-encoder-only (A/B) |
 | `RERANKER_MODEL` | `cross-encoder/quora-distilroberta-base` | Stage-2 cross-encoder |
 | `RERANKER_THRESHOLD` | `0.943` | Min reranker score to accept a hit (empirical, not a probability) |
-| `COMPLEXITY_WORD_THRESHOLD` | `40` | Word count above which a prompt is "complex" |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model |
-| `OLLAMA_HOST` / `OLLAMA_MODEL` | `localhost:11434` / `llama3.2` | Local backend |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-1.5-flash` | Remote backend |
-| `REMOTE_INPUT_COST_PER_1M` / `REMOTE_OUTPUT_COST_PER_1M` | `1.50` / `9.00` | Remote price per 1M input/output tokens |
-| `LOCAL_INPUT_COST_PER_1M` / `LOCAL_OUTPUT_COST_PER_1M` | `0.0` / `0.0` | Local price per 1M input/output tokens |
+| `COMPLEXITY_WORD_THRESHOLD` | `40` | Word count above which a prompt routes remote |
+| `REMOTE_*_COST_PER_1M` | `1.50` / `9.00` | Remote price per 1M input/output tokens |
 | `PROJECTED_MONTHLY_QUERIES` | `100000` | Volume assumed for the savings projection |
 
-**Secrets are never hardcoded.** `.env` is git-ignored; only `.env.example`
-(with blank keys) is committed.
+**Secrets are never hardcoded.** `.env` is git-ignored; only `.env.example` (blank keys) is committed.
 
 ---
 
-## Project layout
+## License
 
-```
-app/            # gateway package (see module map above)
-tests/          # pytest suite with injected fakes
-benchmark.py    # hit-vs-miss latency + savings benchmark
-dashboard.py    # Streamlit metrics dashboard
-Dockerfile
-docker-compose.yml
-.github/workflows/ci.yml
-```
+[MIT](LICENSE) © 2026 Barath Sanjeevan

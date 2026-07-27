@@ -32,6 +32,10 @@ models/
 # Generated eval artifacts (keep the folder, drop the outputs)
 eval/results/*
 !eval/results/.gitkeep
+# ...but DO commit the plots the README embeds, so they render on GitHub.
+!eval/results/precision_recall_vs_threshold.png
+!eval/results/precision_recall_comparison.png
+!eval/results/precision_recall_two_stage_qqp_validation.png
 
 # Editor / OS
 .vscode/
