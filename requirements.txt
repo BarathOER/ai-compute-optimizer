@@ -1,24 +1,10 @@
-# --- Web framework ---
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+# Streamlit Cloud deploy branch -- SLIM requirements for dashboard.py only.
+#
+# The dashboard is a thin HTTP client for the gateway's /metrics and /query
+# endpoints; it needs none of the heavy gateway stack (torch, sentence-
+# transformers, chromadb, ...). The full gateway requirements live on `main`.
+# Do NOT merge this file into main. Pins match main's requirements.txt exactly.
+httpx==0.28.1
+streamlit==1.41.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
-
-# --- Embeddings & semantic cache ---
-sentence-transformers==3.3.1
-chromadb==0.5.23
-# Used directly by app/reranker.py for score normalization (also a transitive
-# dep of the libraries above); range-pinned to avoid resolver conflicts.
-numpy>=1.26,<3
-
-# --- LLM backends ---
-httpx==0.28.1
-google-generativeai==0.8.3
-anyio==4.7.0
-
-# --- Dashboard & benchmarking ---
-streamlit==1.41.1
-pandas==2.2.3
-
-# --- Testing ---
-pytest==8.3.4
