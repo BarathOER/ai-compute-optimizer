@@ -127,6 +127,39 @@ def test_routing_reflected_in_query_response(client, fake_llm) -> None:
     assert fake_llm.calls == ["remote"]
 
 
+def test_router_local_disabled_forces_remote() -> None:
+    """With the local route disabled, even a simple prompt routes remote."""
+    router = ComplexityRouter(word_threshold=40, enable_local_route=False)
+    assert router.route("what is 2 plus 2") == "remote"   # simple, but no local
+    assert router.route("analyze the tradeoffs here") == "remote"
+    # The complexity heuristic itself is unchanged.
+    assert router.is_complex("what is 2 plus 2") is False
+
+
+def test_gemini_only_miss_routes_remote_then_cache_hits(
+    client_gemini_only, fake_llm
+) -> None:
+    """Cloud mode (no Ollama): a miss goes to Gemini; a repeat still hits cache.
+
+    Mirrors ENABLE_LOCAL_ROUTE=false with no local backend available — the
+    two-stage cache is unchanged, only miss-routing changes.
+    """
+    # Simple prompt that would normally route local -> must go remote here.
+    first = client_gemini_only.post("/query", json={"prompt": "capital of france"})
+    body = first.json()
+    assert body["cache_hit"] is False
+    assert body["route"] == "remote"            # not "local"
+    assert fake_llm.calls == ["remote"]         # the LLM was hit remotely
+    assert body["answer"].endswith("capital of france")
+
+    # The cache still works: an identical repeat is served without any LLM call.
+    second = client_gemini_only.post("/query", json={"prompt": "capital of france"})
+    hit = second.json()
+    assert hit["cache_hit"] is True
+    assert hit["route"] == "cache"
+    assert fake_llm.calls == ["remote"]         # still just the one remote call
+
+
 def test_metrics_endpoint_tracks_hits_and_savings(client) -> None:
     """/metrics reflects requests, hit rate, and accumulated savings."""
     client.post("/query", json={"prompt": "capital of france"})  # miss

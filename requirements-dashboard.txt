@@ -1,0 +1,24 @@
+# Slim requirements for deploying ONLY dashboard.py (e.g. Streamlit Cloud).
+#
+# The dashboard is a thin HTTP client for the gateway's /metrics and /query
+# endpoints — it does NOT run the models or the cache. So it needs none of the
+# heavy gateway stack (torch, sentence-transformers, chromadb, onnxruntime,
+# google-generativeai, fastapi, uvicorn). Installing those on Streamlit Cloud is
+# slow and a real build-failure risk; this file is the full, exact set of
+# top-level packages dashboard.py imports (pins match the root requirements.txt).
+#
+# Audited from dashboard.py's import graph (incl. its optional app.config /
+# eval.savings_model imports):
+#   httpx              -> /metrics + /query HTTP calls (the one that crashed)
+#   streamlit          -> the app itself (preinstalled on Streamlit Cloud, pinned here for parity)
+#   pydantic           -> transitively required by app.config for live config values
+#   pydantic-settings  -> app.config Settings loader (else the dashboard falls back to defaults)
+#
+# Streamlit Cloud installs the repo's `requirements.txt`; it can't be pointed at
+# a custom filename. To use this slim set, deploy the dashboard from a branch/
+# repo where THIS is named requirements.txt. Otherwise the root (heavy) file is
+# used — which now includes httpx, so the reported crash is fixed either way.
+httpx==0.28.1
+streamlit==1.41.1
+pydantic==2.10.4
+pydantic-settings==2.7.1

@@ -208,6 +208,17 @@ docker run --rm -p 8000:8000 \
 
 See the [Dockerfile](Dockerfile) for the image-size vs. startup-time tradeoff (CPU torch + baked models; `HF_HUB_OFFLINE=1` at runtime).
 
+### Deployment modes: local+remote vs. Gemini-only
+
+The router's local tier (Ollama) is **optional**, controlled by `ENABLE_LOCAL_ROUTE`:
+
+| Mode | `ENABLE_LOCAL_ROUTE` | Cache-miss routing | Where it fits |
+|------|----------------------|--------------------|---------------|
+| **Full router** (default) | `true` | Simple prompts → **Ollama (local)**, complex → **Gemini (remote)** | Local dev & Docker, where Ollama runs on the host |
+| **Gemini-only** | `false` | **Every** miss → **Gemini (remote)** | Cloud deploys with no Ollama available |
+
+Set `ENABLE_LOCAL_ROUTE=false` and the gateway needs no local model at all — every cache miss goes to Gemini. **The two-stage semantic cache is identical in both modes**; only miss-routing changes, so cloud deploys keep the full caching/cost-saving behavior and simply lose the cheap-local tier. This is what lets the same codebase run on a cloud host (Gemini-only) and on a workstation/Docker with Ollama (full local+remote).
+
 ---
 
 ## Configuration
@@ -222,6 +233,7 @@ All settings come from environment variables — see [`.env.example`](.env.examp
 | `RERANKER_MODEL` | `cross-encoder/quora-distilroberta-base` | Stage-2 cross-encoder |
 | `RERANKER_THRESHOLD` | `0.943` | Min reranker score to accept a hit (empirical, not a probability) |
 | `COMPLEXITY_WORD_THRESHOLD` | `40` | Word count above which a prompt routes remote |
+| `ENABLE_LOCAL_ROUTE` | `true` | `false` = every miss routes to Gemini (cloud, no Ollama) |
 | `REMOTE_*_COST_PER_1M` | `1.50` / `9.00` | Remote price per 1M input/output tokens |
 | `PROJECTED_MONTHLY_QUERIES` | `100000` | Volume assumed for the savings projection |
 

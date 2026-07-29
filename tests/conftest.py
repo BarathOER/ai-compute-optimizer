@@ -208,7 +208,11 @@ def fake_llm() -> FakeLLM:
 
 
 def build_fake_services(
-    settings: Settings, fake_llm: FakeLLM, *, enable_reranker: bool = True
+    settings: Settings,
+    fake_llm: FakeLLM,
+    *,
+    enable_reranker: bool = True,
+    enable_local_route: bool = True,
 ) -> Services:
     """Assemble a Services container from fakes, reranker on or off."""
     reranker = FakeReranker(threshold=settings.reranker_threshold) if enable_reranker else None
@@ -221,7 +225,10 @@ def build_fake_services(
             reranker=reranker,
             top_k=settings.rerank_top_k,
         ),
-        router=ComplexityRouter(settings.complexity_word_threshold),
+        router=ComplexityRouter(
+            settings.complexity_word_threshold,
+            enable_local_route=enable_local_route,
+        ),
         llm=fake_llm,
         metrics=Metrics(
             remote_input_cost_per_1m=settings.remote_input_cost_per_1m,
@@ -246,6 +253,12 @@ def services_no_reranker(settings: Settings, fake_llm: FakeLLM) -> Services:
     return build_fake_services(settings, fake_llm, enable_reranker=False)
 
 
+@pytest.fixture
+def services_gemini_only(settings: Settings, fake_llm: FakeLLM) -> Services:
+    """Cloud-style Services with the local route disabled (Gemini-only)."""
+    return build_fake_services(settings, fake_llm, enable_local_route=False)
+
+
 def _client_for(services: Services) -> TestClient:
     """A TestClient with the Services dependency overridden by ``services``.
 
@@ -268,5 +281,12 @@ def client(services: Services):
 @pytest.fixture
 def client_no_reranker(services_no_reranker: Services):
     test_client = _client_for(services_no_reranker)
+    yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_gemini_only(services_gemini_only: Services):
+    test_client = _client_for(services_gemini_only)
     yield test_client
     app.dependency_overrides.clear()

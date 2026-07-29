@@ -77,6 +77,12 @@ class Settings(BaseSettings):
         description="Prompts longer than this many words are treated as "
         "complex and routed to the remote model.",
     )
+    enable_local_route: bool = Field(
+        default=True,
+        description="If false, every cache miss is routed to the remote model "
+        "(Gemini) instead of the local one (Ollama). Set false for cloud "
+        "deploys with no Ollama; the two-stage cache is unaffected.",
+    )
 
     # --- Ollama (local model) -------------------------------------------
     ollama_host: str = Field(default="http://localhost:11434")

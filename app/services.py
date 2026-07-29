@@ -56,7 +56,10 @@ def build_services(settings: Settings) -> Services:
         port=settings.chroma_port,
         persist_dir=settings.chroma_persist_dir,
     )
-    router = ComplexityRouter(settings.complexity_word_threshold)
+    router = ComplexityRouter(
+        settings.complexity_word_threshold,
+        enable_local_route=settings.enable_local_route,
+    )
     llm = LLMClient(
         ollama_host=settings.ollama_host,
         ollama_model=settings.ollama_model,
