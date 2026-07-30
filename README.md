@@ -3,9 +3,9 @@
 **An LLM cost-optimization gateway — a two-stage semantic cache + model router that sits in front of your LLMs and stops you paying full price for questions you've already answered.**
 
 <p>
+<a href="https://github.com/BarathOER/ai-compute-optimizer/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/BarathOER/ai-compute-optimizer/actions/workflows/ci.yml/badge.svg?branch=main"></a>
 <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white">
 <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
-<img alt="tests" src="https://img.shields.io/badge/tests-28%20passing-2ea44f">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
