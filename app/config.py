@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # --- Service ---------------------------------------------------------
     app_name: str = Field(default="AI Compute Optimizer")
     log_level: str = Field(default="INFO")
+    rate_limit: str = Field(
+        default="10/minute",
+        description="Per-IP rate limit for /query (slowapi syntax, e.g. "
+        "'10/minute', '100/hour'). Protects the public deploy from abuse/cost. "
+        "/health and /metrics are unlimited.",
+    )
 
     # --- Embeddings ------------------------------------------------------
     embedding_model: str = Field(

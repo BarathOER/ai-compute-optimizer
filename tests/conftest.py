@@ -268,6 +268,9 @@ def _client_for(services: Services) -> TestClient:
     """
     app.dependency_overrides[get_services] = lambda: services
     app.state.services = services
+    # Rate limiting is disabled by default so multi-request tests don't trip it;
+    # the dedicated rate-limit test re-enables it explicitly.
+    app.state.limiter.enabled = False
     return TestClient(app)
 
 
