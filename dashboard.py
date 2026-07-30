@@ -90,8 +90,9 @@ except Exception:  # standalone fallback: identical validated constants + math
 BENCH_VOLUME = 100_000
 BENCH_HIT_RATE = MEASURED_HIT_RATE      # 44.4%
 BENCH_COST_REDUCTION = 0.694            # 69.4% vs an all-remote gateway
-BENCH_HIT_LATENCY_MS = 48.0            # 48 ms on a cache hit
-BENCH_MISS_LATENCY_MS = 10_000.0       # ~10 s on an LLM miss
+# Aligned with the README headline (14.2 s -> 50 ms; ~282x).
+BENCH_HIT_LATENCY_MS = 50.0            # 50 ms on a cache hit
+BENCH_MISS_LATENCY_MS = 14_200.0      # ~14.2 s on an LLM miss
 
 # Defaults to the deployed Render backend (for the Streamlit Cloud deploy);
 # override via the GATEWAY_URL env var or the sidebar input (e.g. for local runs
@@ -119,7 +120,7 @@ html, body, [class*="css"] {
 }
 .brand { display:flex; align-items:center; gap:.65rem; margin-bottom:.25rem; }
 .brand-mark { font-size:1.5rem; }
-.brand-name { font-size:1.35rem; font-weight:700; letter-spacing:-.01em; }
+.brand-name { font-size:1.35rem; font-weight:700; letter-spacing:-.01em; color:var(--ink); }
 .brand-sub { color: var(--muted); font-size:.9rem; margin:-.15rem 0 1.1rem 2.15rem; }
 
 .section-title {
@@ -158,9 +159,10 @@ html, body, [class*="css"] {
 /* KPI grid */
 .kpi-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:1rem; margin-top:1rem; }
 .kpi-card { background:var(--card); border:1px solid var(--border); border-radius:14px;
-  padding:1.1rem 1.25rem; box-shadow: var(--shadow); }
+  padding:1.1rem 1.25rem; box-shadow: var(--shadow); color:var(--ink); }
 .kpi-label { font-size:.78rem; color:var(--muted); font-weight:600; letter-spacing:.02em; }
-.kpi-value { font-size:1.9rem; font-weight:750; letter-spacing:-.02em; margin:.2rem 0 .1rem; }
+.kpi-value { font-size:1.9rem; font-weight:700; letter-spacing:-.02em; margin:.2rem 0 .1rem;
+  color:var(--ink); }
 .kpi-sub { font-size:.82rem; color:var(--muted); }
 .kpi-live { margin-top:.6rem; padding-top:.5rem; border-top:1px dashed var(--border);
   font-size:.76rem; color:var(--muted); }
@@ -169,8 +171,8 @@ html, body, [class*="css"] {
 /* Cards + charts */
 .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap:1rem; }
 .card { background:var(--card); border:1px solid var(--border); border-radius:14px;
-  padding:1.3rem 1.45rem; box-shadow: var(--shadow); height:100%; }
-.card-title { font-size:.98rem; font-weight:700; margin:0 0 .3rem; }
+  padding:1.3rem 1.45rem; box-shadow: var(--shadow); height:100%; color:var(--ink); }
+.card-title { font-size:.98rem; font-weight:700; margin:0 0 .3rem; color:var(--ink); }
 .card-note { font-size:.8rem; color:var(--muted); margin:0 0 1rem; }
 
 .bar-row { display:grid; grid-template-columns: 128px 1fr 92px; align-items:center;
@@ -179,7 +181,7 @@ html, body, [class*="css"] {
 .bar-track { background:#eef1f5; border-radius:999px; height:16px; overflow:hidden; }
 .bar-fill { height:100%; border-radius:999px; }
 .bar-value { font-size:.86rem; font-weight:600; text-align:right;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums; color:var(--ink); }
 
 /* Donut */
 .donut-wrap { display:flex; align-items:center; gap:1.6rem; }
@@ -187,7 +189,7 @@ html, body, [class*="css"] {
 .donut::after { content:""; position:absolute; inset:24px; background:var(--card);
   border-radius:50%; }
 .legend { display:flex; flex-direction:column; gap:.5rem; }
-.legend-item { display:flex; align-items:center; gap:.55rem; font-size:.88rem; }
+.legend-item { display:flex; align-items:center; gap:.55rem; font-size:.88rem; color:#334155; }
 .dot { width:11px; height:11px; border-radius:3px; flex:none; }
 .legend-val { color:var(--muted); font-variant-numeric: tabular-nums; }
 
@@ -210,23 +212,24 @@ html, body, [class*="css"] {
 .live-badge { font-size:.68rem; font-weight:800; letter-spacing:.06em;
   background:#fdeaea; color:#b91c1c; padding:.18rem .55rem; border-radius:6px; }
 .live-badge::before { content:"● "; }
-.live-title { font-weight:700; }
+.live-title { font-weight:700; color:var(--ink); }
 .live-disclaimer { font-size:.82rem; color:var(--muted); margin:.15rem 0 1rem; }
 .live-disclaimer b { color:#334155; }
 .stat-row { display:grid; grid-template-columns: repeat(5, 1fr); gap:.85rem; margin-bottom:1.1rem; }
 .stat-tile { background:#fafbfc; border:1px solid var(--border); border-radius:12px;
-  padding:.8rem .95rem; }
+  padding:.8rem .95rem; color:var(--ink); }
 .stat-tile .t-label { font-size:.72rem; color:var(--muted); font-weight:600; }
-.stat-tile .t-value { font-size:1.3rem; font-weight:750; letter-spacing:-.01em;
-  font-variant-numeric: tabular-nums; }
+.stat-tile .t-value { font-size:1.3rem; font-weight:700; letter-spacing:-.01em;
+  font-variant-numeric: tabular-nums; color:var(--ink); }
 
 /* Trust & Safety */
 .trust-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:1rem; }
 .trust-card { background:var(--card); border:1px solid var(--border); border-radius:14px;
-  padding:1.15rem 1.3rem; box-shadow: var(--shadow); }
+  padding:1.15rem 1.3rem; box-shadow: var(--shadow); color:var(--ink); }
 .trust-card.warn { border-left:3px solid var(--amber); }
 .trust-card.ok { border-left:3px solid var(--green); }
-.trust-h { font-size:.92rem; font-weight:700; display:flex; align-items:center; gap:.5rem; }
+.trust-h { font-size:.92rem; font-weight:700; display:flex; align-items:center; gap:.5rem;
+  color:var(--ink); }
 .trust-b { font-size:.85rem; color:#475569; margin-top:.35rem; line-height:1.5; }
 .stat-inline { font-weight:750; color:var(--ink); }
 
@@ -249,7 +252,7 @@ html, body, [class*="css"] {
 
 /* Query tester response */
 .qr { background:var(--card); border:1px solid var(--border); border-radius:14px;
-  padding:1.2rem 1.35rem; box-shadow: var(--shadow); }
+  padding:1.2rem 1.35rem; box-shadow: var(--shadow); color:var(--ink); }
 .qr-meta { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.9rem; }
 .qr-chip { font-size:.78rem; background:#f4f6f9; border:1px solid var(--border);
   border-radius:8px; padding:.28rem .6rem; color:#334155; }
@@ -463,7 +466,7 @@ def render_executive(data: dict) -> None:
         ),
         kpi_card(
             "Cache-hit latency", ms(BENCH_HIT_LATENCY_MS),
-            f"vs ~{BENCH_MISS_LATENCY_MS / 1000:.0f}s on an LLM miss",
+            f"vs ~{BENCH_MISS_LATENCY_MS / 1000:.1f}s on an LLM miss",
             live=f"Live: <b>{ms(live_hit)}</b> hit / {ms(live_miss)} miss",
         ),
     ]

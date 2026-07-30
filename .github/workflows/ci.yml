@@ -1,10 +1,13 @@
 name: CI
 
+# Tests run ONLY for main: on pushes to main and on PRs targeting main.
+# The dashboard-deploy branch intentionally ships slim requirements (no pytest/
+# torch/app deps), so it must never trigger this workflow.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+    branches: [main]
 
 jobs:
   test:
