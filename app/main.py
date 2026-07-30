@@ -13,14 +13,23 @@ Request flow for ``/query``:
     similarity is reported on misses too, so the threshold can be tuned.
 """
 
-from __future__ import annotations
+# NOTE: deliberately NOT using `from __future__ import annotations`.
+# slowapi's @limiter.limit wraps the endpoint, and its wrapper carries slowapi's
+# module globals. Under PEP 563 (stringized annotations), FastAPI would try to
+# resolve the endpoint's string annotations (e.g. "QueryRequest") against those
+# wrong globals, fail silently, and misclassify the Pydantic body as a query
+# param -> 422. Real annotation objects need no such resolution.
 
 import logging
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app import __version__
 from app.config import Settings, get_settings
@@ -29,6 +38,55 @@ from app.models import HealthResponse, QueryRequest, QueryResponse
 from app.services import Services, build_services, get_services
 
 logger = logging.getLogger("ai_compute_optimizer")
+
+
+def _rate_limit() -> str:
+    """The active per-IP limit for /query, read from config (env RATE_LIMIT)."""
+    return get_settings().rate_limit
+
+
+def client_ip_key(request: Request) -> str:
+    """Rate-limit key: the real client IP, honoring ``X-Forwarded-For``.
+
+    On a platform like Render the app sits behind a proxy, so the socket peer
+    (``request.client.host``) is the proxy — keying on it would make the limit
+    *global* across all users. Proxies put the originating client IP as the
+    first entry of ``X-Forwarded-For`` (``client, proxy1, proxy2``), so we use
+    that. When there is no proxy header (local/Docker), fall back to the socket
+    peer via slowapi's ``get_remote_address``.
+
+    Note: ``X-Forwarded-For`` is client-settable when requests can reach the app
+    directly, so this is sound for abuse/cost protection but not a hard security
+    boundary. Behind a trusted proxy that overwrites the header, it's reliable.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client = forwarded.split(",")[0].strip()
+        if client:
+            return client
+    return get_remote_address(request)
+
+
+# Per-IP limiter. Only /query is decorated; /health and /metrics stay unlimited.
+# headers_enabled=True so 429s carry Retry-After / RateLimit-* headers.
+limiter = Limiter(key_func=client_ip_key, headers_enabled=True)
+
+
+async def _rate_limit_exceeded_handler(
+    request: Request, exc: RateLimitExceeded
+) -> JSONResponse:
+    """Return a clean JSON 429 (with Retry-After / RateLimit-* headers)."""
+    response = JSONResponse(
+        status_code=429,
+        content={
+            "detail": f"Rate limit exceeded: {exc.detail}. "
+            "Please slow down and retry shortly."
+        },
+    )
+    # slowapi attaches the standard rate-limit headers (Retry-After, etc.).
+    return request.app.state.limiter._inject_headers(
+        response, request.state.view_rate_limit
+    )
 
 
 @asynccontextmanager
@@ -50,6 +108,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Wire the rate limiter: slowapi finds it on app.state.limiter, and the handler
+# turns a tripped limit into a clean JSON 429.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
 async def health(services: Services = Depends(get_services)) -> HealthResponse:
@@ -68,11 +131,19 @@ async def metrics(services: Services = Depends(get_services)) -> dict:
 
 
 @app.post("/query", response_model=QueryResponse, tags=["query"])
+@limiter.limit(_rate_limit)
 async def query(
+    request: Request,
+    response: Response,
     payload: QueryRequest,
     services: Services = Depends(get_services),
 ) -> QueryResponse:
-    """Answer a prompt from cache when possible, otherwise route to an LLM."""
+    """Answer a prompt from cache when possible, otherwise route to an LLM.
+
+    Rate-limited per client IP (``RATE_LIMIT``, default 10/minute). ``request``
+    lets slowapi identify the caller; ``response`` lets it attach RateLimit-*
+    headers to successful replies.
+    """
     start = time.perf_counter()
     embedding = services.embedder.embed(payload.prompt)
 

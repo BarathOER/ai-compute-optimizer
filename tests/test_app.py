@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from app.config import Settings, get_settings
+from app.main import app as fastapi_app, client_ip_key
 from app.metrics import Metrics
 from app.router import ComplexityRouter
+
+
+def _fake_request(xff: str | None, host: str = "10.0.0.9"):
+    """Minimal stand-in with the attributes client_ip_key / slowapi read."""
+    headers = {"x-forwarded-for": xff} if xff is not None else {}
+    return SimpleNamespace(headers=headers, client=SimpleNamespace(host=host))
 
 
 def test_health_ok(client) -> None:
@@ -125,6 +135,138 @@ def test_routing_reflected_in_query_response(client, fake_llm) -> None:
     body = response.json()
     assert body["route"] == "remote"
     assert fake_llm.calls == ["remote"]
+
+
+def test_router_local_disabled_forces_remote() -> None:
+    """With the local route disabled, even a simple prompt routes remote."""
+    router = ComplexityRouter(word_threshold=40, enable_local_route=False)
+    assert router.route("what is 2 plus 2") == "remote"   # simple, but no local
+    assert router.route("analyze the tradeoffs here") == "remote"
+    # The complexity heuristic itself is unchanged.
+    assert router.is_complex("what is 2 plus 2") is False
+
+
+def test_gemini_only_miss_routes_remote_then_cache_hits(
+    client_gemini_only, fake_llm
+) -> None:
+    """Cloud mode (no Ollama): a miss goes to Gemini; a repeat still hits cache.
+
+    Mirrors ENABLE_LOCAL_ROUTE=false with no local backend available — the
+    two-stage cache is unchanged, only miss-routing changes.
+    """
+    # Simple prompt that would normally route local -> must go remote here.
+    first = client_gemini_only.post("/query", json={"prompt": "capital of france"})
+    body = first.json()
+    assert body["cache_hit"] is False
+    assert body["route"] == "remote"            # not "local"
+    assert fake_llm.calls == ["remote"]         # the LLM was hit remotely
+    assert body["answer"].endswith("capital of france")
+
+    # The cache still works: an identical repeat is served without any LLM call.
+    second = client_gemini_only.post("/query", json={"prompt": "capital of france"})
+    hit = second.json()
+    assert hit["cache_hit"] is True
+    assert hit["route"] == "cache"
+    assert fake_llm.calls == ["remote"]         # still just the one remote call
+
+
+def test_rate_limit_config_default_and_env(monkeypatch) -> None:
+    """RATE_LIMIT defaults to 10/minute and is overridable via the environment."""
+    monkeypatch.delenv("RATE_LIMIT", raising=False)
+    assert Settings(gemini_api_key="k").rate_limit == "10/minute"
+    monkeypatch.setenv("RATE_LIMIT", "3/minute")
+    assert Settings(gemini_api_key="k").rate_limit == "3/minute"
+
+
+def test_client_ip_key_prefers_forwarded_for() -> None:
+    """The rate-limit key is the first X-Forwarded-For IP, else the socket peer."""
+    # Single forwarded IP.
+    assert client_ip_key(_fake_request("203.0.113.7")) == "203.0.113.7"
+    # Chain "client, proxy1, proxy2" -> take the originating (leftmost) client.
+    assert client_ip_key(_fake_request("203.0.113.7, 10.0.0.1, 10.0.0.2")) == "203.0.113.7"
+    # Whitespace tolerated.
+    assert client_ip_key(_fake_request("  198.51.100.4 ")) == "198.51.100.4"
+    # No proxy header -> fall back to the socket peer (local/Docker).
+    assert client_ip_key(_fake_request(None, host="127.0.0.5")) == "127.0.0.5"
+    # Empty/blank header -> also falls back.
+    assert client_ip_key(_fake_request("", host="127.0.0.6")) == "127.0.0.6"
+
+
+def test_rate_limit_is_per_forwarded_client(client, monkeypatch) -> None:
+    """Behind a proxy, the limit is per X-Forwarded-For client, not global.
+
+    Exhaust client A's quota; client B (different forwarded IP) must still pass —
+    proving keys are per-client. If we keyed on the socket peer, both would share
+    one bucket and B would be blocked too.
+    """
+    limiter = fastapi_app.state.limiter
+    monkeypatch.setenv("RATE_LIMIT", "2/minute")
+    get_settings.cache_clear()
+
+    def _reset() -> None:
+        try:
+            limiter._storage.reset()
+        except Exception:
+            pass
+
+    _reset()
+    limiter.enabled = True
+    client_a = {"X-Forwarded-For": "1.1.1.1"}
+    client_b = {"X-Forwarded-For": "2.2.2.2"}
+    try:
+        # Client A: 2 allowed, 3rd blocked.
+        a_codes = [
+            client.post("/query", json={"prompt": "hi"}, headers=client_a).status_code
+            for _ in range(3)
+        ]
+        assert a_codes == [200, 200, 429], a_codes
+
+        # Client B has its own bucket -> still allowed despite A being limited.
+        b = client.post("/query", json={"prompt": "hi"}, headers=client_b)
+        assert b.status_code == 200
+    finally:
+        limiter.enabled = False
+        _reset()
+        get_settings.cache_clear()
+
+
+def test_query_rate_limited_returns_clean_429(client, monkeypatch) -> None:
+    """/query enforces the per-IP limit and returns a clean JSON 429.
+
+    Sets a small limit (3/minute), so the 4th request from the same client is
+    rejected. /health stays unlimited.
+    """
+    limiter = fastapi_app.state.limiter
+    monkeypatch.setenv("RATE_LIMIT", "3/minute")
+    get_settings.cache_clear()  # so _rate_limit() picks up the 3/minute value
+
+    def _reset() -> None:
+        try:
+            limiter._storage.reset()
+        except Exception:
+            pass
+
+    _reset()
+    limiter.enabled = True
+    try:
+        codes = [
+            client.post("/query", json={"prompt": "capital of france"}).status_code
+            for _ in range(3)
+        ]
+        assert codes == [200, 200, 200], f"first 3 should pass, got {codes}"
+
+        blocked = client.post("/query", json={"prompt": "capital of france"})
+        assert blocked.status_code == 429
+        body = blocked.json()
+        assert "Rate limit exceeded" in body["detail"]
+        assert "retry" in body["detail"].lower()
+
+        # /health is NOT rate-limited even after /query is blocked.
+        assert client.get("/health").status_code == 200
+    finally:
+        limiter.enabled = False
+        _reset()
+        get_settings.cache_clear()
 
 
 def test_metrics_endpoint_tracks_hits_and_savings(client) -> None:

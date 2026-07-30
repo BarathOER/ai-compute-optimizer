@@ -93,7 +93,10 @@ BENCH_COST_REDUCTION = 0.694            # 69.4% vs an all-remote gateway
 BENCH_HIT_LATENCY_MS = 48.0            # 48 ms on a cache hit
 BENCH_MISS_LATENCY_MS = 10_000.0       # ~10 s on an LLM miss
 
-DEFAULT_URL = os.environ.get("GATEWAY_URL", "http://localhost:8000")
+# Defaults to the deployed Render backend (for the Streamlit Cloud deploy);
+# override via the GATEWAY_URL env var or the sidebar input (e.g. for local runs
+# point it at http://localhost:8000).
+DEFAULT_URL = os.environ.get("GATEWAY_URL", "https://ai-compute-optimizer.onrender.com")
 
 # Cohesive palette (route colors reused across every chart).
 C_CACHE = "#059669"   # green  — served from cache
@@ -683,7 +686,11 @@ def render_unreachable(url: str, error: str) -> None:
         <div class="unreachable">
           <h3>⚠️ Can't reach the gateway</h3>
           <p>No response from <code>{url}</code>.</p>
-          <p style="color:#64748b;font-size:.9rem;">Start it with
+          <p style="color:#64748b;font-size:.9rem;"><b>If this is the hosted
+          backend:</b> it runs on Render's free tier and sleeps when idle, so the
+          first request can take <b>~50&nbsp;s</b> to wake it — wait ~50&nbsp;s and
+          press <b>Refresh</b>.</p>
+          <p style="color:#64748b;font-size:.9rem;">Running locally? Start it with
           <code>uvicorn app.main:app</code> or <code>docker compose up</code>,
           then check the URL in the sidebar and press <b>Refresh</b>.</p>
           <p style="color:#94a3b8;font-size:.82rem;margin-top:.6rem;">Details: {error}</p>
@@ -714,6 +721,12 @@ def main() -> None:
                 f'<div class="conn"><span class="dot" style="background:{C_REMOTE}"></span>'
                 f'Offline</div>', unsafe_allow_html=True,
             )
+        st.info(
+            "⏳ The backend runs on Render's free tier and **sleeps when idle** — "
+            "the first request can take **~50 s** to wake it. If it shows offline, "
+            "wait ~50 s and press Refresh.",
+            icon="⏳",
+        )
         st.caption("Headline numbers are the validated benchmark. The Live session "
                    "panel reads /metrics from this server. Refreshes on demand.")
     if refresh:

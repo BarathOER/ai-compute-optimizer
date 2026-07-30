@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # --- Service ---------------------------------------------------------
     app_name: str = Field(default="AI Compute Optimizer")
     log_level: str = Field(default="INFO")
+    rate_limit: str = Field(
+        default="10/minute",
+        description="Per-IP rate limit for /query (slowapi syntax, e.g. "
+        "'10/minute', '100/hour'). Protects the public deploy from abuse/cost. "
+        "/health and /metrics are unlimited.",
+    )
 
     # --- Embeddings ------------------------------------------------------
     embedding_model: str = Field(
@@ -76,6 +82,12 @@ class Settings(BaseSettings):
         default=40,
         description="Prompts longer than this many words are treated as "
         "complex and routed to the remote model.",
+    )
+    enable_local_route: bool = Field(
+        default=True,
+        description="If false, every cache miss is routed to the remote model "
+        "(Gemini) instead of the local one (Ollama). Set false for cloud "
+        "deploys with no Ollama; the two-stage cache is unaffected.",
     )
 
     # --- Ollama (local model) -------------------------------------------
